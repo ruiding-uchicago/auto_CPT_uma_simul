@@ -1,8 +1,18 @@
-# FAIRChem Auto-UMA Simulation Toolkit
+# RAPIDS: Rapid Adsorption Probe Interaction Discovery System
 
-ML-accelerated molecular interaction calculations using FAIRChem's Universal Materials Atomistic (UMA) models. Only 2 parameters required to start!
+<div align="center">
+  <img src="icon.png" alt="RAPIDS Logo" width="200"/>
+  
+  **RAPIDS** - **R**apid **A**dsorption **P**robe **I**nteraction **D**iscovery **S**ystem
+  
+  *ML-accelerated molecular interaction calculations using FAIRChem's Universal Materials Atomistic (UMA) models*
+</div>
 
-This is designed for less computational chemistry background users to begin with quick qualitatively dry lab simulations of probe-target-channel (substrate) interaction strength with minimum skillset required.
+---
+
+## Overview
+
+RAPIDS is designed for researchers with minimal computational chemistry background to perform quick, qualitative dry-lab simulations of probe-target-substrate interactions. Only 2 parameters required to start!
 
 ## Features
 
