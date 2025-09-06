@@ -532,6 +532,10 @@ class SimulationBuilder:
             # Create the three-component system
             system_three = self.substrate.copy()
             
+            # Parse probe position and orientation (same as used above)
+            probe_position = self.parse_position(probe_position_config, cell, substrate_top)
+            probe_orientation = self.parse_orientation(probe_orientation_config)
+            
             # Add probe at its position
             if probe_position == "auto":
                 center_xy = cell.diagonal()[:2] / 2
@@ -548,6 +552,9 @@ class SimulationBuilder:
             
             system_three.extend(probe_mol)
             
+            # Parse target orientation
+            target_orientation = self.parse_orientation(target_orientation_config)
+            
             # Now add target above the probe
             if target_position_config == "auto" or target_position_config is None:
                 # Place target above probe
@@ -555,7 +562,7 @@ class SimulationBuilder:
             else:
                 target_pos = self.parse_position(target_position_config, cell, substrate_top)
             
-            target_mol = self.apply_transformation(self.target, target_pos, target_orientation_config)
+            target_mol = self.apply_transformation(self.target, target_pos, target_orientation)
             
             # Check for overlaps with the existing system
             if target_position_config == "auto" or target_position_config is None:

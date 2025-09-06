@@ -337,7 +337,8 @@ class SmartFAIRChemFlow:
         
         # Special handling for three-component system
         # Use optimized probe_substrate as starting point
-        if self.config.get("probe") and self.config.get("target") and self.config.get("substrate") and "probe_substrate" in optimized:
+        if (self.config.get("probe") and self.config.get("target") and self.config.get("substrate") 
+            and "probe_substrate" in optimized and "target_vacuum" in structures and "substrate_only" in structures):
             print("\n" + "="*60)
             print("Building three-component system from optimized probe_substrate")
             print("="*60)
