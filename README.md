@@ -10,6 +10,39 @@
 
 ---
 
+## 🚀 First Time Using Python? Start Here!
+
+**New to Python?** No worries! Here's the simplest way to get started:
+
+1. **Download Anaconda** (easiest for beginners): 
+   - Go to [anaconda.com/download](https://www.anaconda.com/download)
+   - Download the installer for your system (Windows/Mac/Linux)
+   - Run the installer (default settings are fine!)
+
+2. **Open Anaconda Prompt** (Windows) or Terminal (Mac/Linux):
+   - Windows: Search "Anaconda Prompt" in Start Menu
+   - Mac/Linux: Open Terminal
+
+3. **Copy-paste these commands** (one at a time):
+   ```bash
+   pip install fairchem-core
+   pip install pubchempy
+   ```
+
+4. **Download RAPIDS**:
+   - Click the green "Code" button above → "Download ZIP"
+   - Extract to your Desktop or Documents folder
+
+5. **Run your first simulation**:
+   ```bash
+   cd Desktop/auto_CPT_uma_simul-main
+   python smart_fairchem_flow.py example_configs/tutorials/01_simplest.json
+   ```
+
+📺 **Need visual help?** Watch: [How to Install Anaconda on Windows](https://www.youtube.com/results?search_query=install+anaconda+windows+2024)
+
+---
+
 ## Overview
 
 RAPIDS is designed for researchers with minimal computational chemistry background to perform quick, qualitative dry-lab simulations of probe-target-substrate interactions. Only 2 parameters required to start!
