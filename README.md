@@ -9,6 +9,7 @@ This is designed for less computational chemistry background users to begin with
 - **Automatic molecule download** from chemical names (PubChem + rare molecules collection)
 - **Smart optimization** with auto-continuation and structure validation
 - **Batch screening** - Compare multiple molecules and rank by binding affinity
+- **Three-component system** - Calculates target binding to already-adsorbed probe on substrate
 - **Advanced placement** - Custom molecular positioning for MOF pores, etc.
 - **Cross-platform** - Works on Mac, Linux, and Windows
 - **Minimum hardware required** - User can use cuda, or default CPU for edge device users.
@@ -27,13 +28,15 @@ login(token="hf_YOUR_TOKEN_HERE")  # Get token from HuggingFace settings
 model = pretrained_mlip.get_predict_unit("uma-s-1p1")
 ```
 
-### Run Simulations
+### Setup Environment
 ```bash
-# Setup environment
-
+# Install required packages
 pip install fairchem-core
 pip install pubchempy
+```
 
+### Run Simulations
+```bash
 # Run simplest example (just 2 parameters!)
 python smart_fairchem_flow.py example_configs/tutorials/01_simplest.json
 ```
@@ -94,7 +97,12 @@ simulations/              # Results (auto-created)
 
 Results in `simulations/[run_name]/`:
 - Optimized structures (`.vasp`)
+  - `probe_substrate_optimized.vasp` - Probe on substrate
+  - `probe_target_substrate_optimized.vasp` - Three-component system
 - Interaction energies (`interactions.json`)
+  - Probe adsorption energy
+  - Target binding to adsorbed probe
+  - Substrate effect on binding
 - Analysis report (`smart_report.txt`)
 
 ## Documentation

@@ -150,9 +150,12 @@ Generated in `simulations/[run_name]/` directory:
 - `probe_vacuum.vasp`: Probe molecule in vacuum
 - `target_vacuum.vasp`: Target molecule in vacuum (if applicable)
 - `substrate_only.vasp`: Pure substrate structure
-- `probe_substrate.vasp`: Probe molecule on substrate
+- `probe_substrate.vasp`: Probe molecule on substrate (initial)
 - `probe_target_vacuum.vasp`: Probe-target complex in vacuum
+- `probe_target_substrate.vasp`: Three-component system (initial)
 - `*_optimized.vasp`: Optimized structures (from smart_fairchem_flow.py)
+  - `probe_substrate_optimized.vasp`: Optimized probe on substrate
+  - `probe_target_substrate_optimized.vasp`: Optimized three-component system
 
 ### Optimization Logs
 - `*_opt_0.log`: Optimization trajectories for each structure
@@ -170,12 +173,27 @@ E_ads = E(probe_substrate) - E(probe_vacuum) - E(substrate_only)
 - **Negative values**: Stable adsorption, more negative = more stable
 - **Positive values**: Unstable, possibly local minimum
 
-### Interaction Energy
+### Interaction Energy (Vacuum)
 ```
-E_int = E(probe_target) - E(probe) - E(target)
+E_int_vac = E(probe_target_vacuum) - E(probe_vacuum) - E(target_vacuum)
 ```
 - **Negative values**: Attractive interaction
 - **Positive values**: Repulsive interaction
+
+### Target Binding to Adsorbed Probe (Three-Component)
+```
+E_binding = E(probe_target_substrate) - E(probe_substrate_optimized) - E(target_vacuum)
+```
+- **Negative values**: Favorable binding
+- **Positive values**: Unfavorable binding
+- This represents the realistic scenario where target binds to an already-adsorbed probe
+
+### Substrate Effect on Binding
+```
+E_substrate_effect = E_binding - E_int_vac
+```
+- **Negative values**: Substrate enhances probe-target binding
+- **Positive values**: Substrate weakens probe-target binding
 
 ## Smart Features
 

@@ -374,10 +374,15 @@ class SmartFAIRChemFlow:
             system_three.extend(target_mol)
             
             # Now optimize the three-component system
+            # Fix both substrate and probe (only optimize target position)
+            substrate_and_probe_atoms = len(system_three) - len(structures["target_vacuum"])
+            fix_indices = list(range(substrate_and_probe_atoms))
+            system_three.set_constraint(FixAtoms(indices=fix_indices))
+            
             opt_three, converged_three = self.smart_optimize(
                 system_three,
                 "probe_target_substrate",
-                fix_substrate=True  # Keep substrate fixed
+                fix_substrate=False  # Already set constraints above
             )
             optimized["probe_target_substrate"] = opt_three
             convergence_status["probe_target_substrate"] = converged_three

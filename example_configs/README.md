@@ -18,15 +18,15 @@ python batch_comparison.py example_configs/screening/sugar_screening.json
 Step-by-step examples for beginners:
 - `01_simplest.json` - Minimal 2-parameter config
 - `02_with_height.json` - Controlling molecule height
-- `03_two_molecules.json` - Probe + target molecules
+- `03_two_molecules.json` - Probe + target molecules (includes three-component system)
 - `04_vacuum_study.json` - No substrate (vacuum box)
 - `05_rare_molecules.json` - Using beta-CD from rare_molecules
-- `glucose_caffeine_minimal.json` - Classic biomolecule example
+- `glucose_caffeine_minimal.json` - Classic biomolecule example (calculates glucose-caffeine on Graphene)
 - `ethanol_acetone_vacuum.json` - Solvent interactions
 
 ### 🔬 screening/ (Use `batch_comparison.py`)
 Batch comparison configs for screening multiple molecules:
-- `sugar_screening.json` - Compare 5 sugars binding to caffeine
+- `sugar_screening.json` - Compare 5 sugars binding to caffeine on Graphene (three-component)
 - `amino_acid_adsorption.json` - Test amino acids on MoS2
 - `drug_screening_vacuum.json` - Drug encapsulation study
 
@@ -73,6 +73,17 @@ Real-world research applications:
   "probe_orientation": {"align": "flat"}
 }
 ```
+
+## Important Notes
+
+### Three-Component System
+When both `probe`, `target`, and `substrate` are specified:
+1. First optimizes probe on substrate
+2. Then adds target to the optimized probe-substrate system
+3. Calculates realistic binding energy in presence of substrate
+4. Shows substrate effect on probe-target binding
+
+This provides more accurate results than vacuum calculations alone!
 
 ## Parameter Reference
 
