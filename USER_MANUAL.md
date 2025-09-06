@@ -39,11 +39,12 @@ This is an intelligent molecular simulation toolkit based on FAIRChem UMA models
 ### Environment Setup
 
 ```bash
-# Activate FAIRChem environment
-conda activate uma
+# Install required packages
+pip install fairchem-core
+pip install pubchempy
 
-# Ensure required packages are installed
-pip install ase pubchempy rdkit scipy
+# Optional: Install additional packages for full functionality
+pip install rdkit scipy
 ```
 
 ### Minimal Configuration Run
@@ -375,12 +376,12 @@ Modify `model_name` to use other FAIRChem models:
 ## Technical Details
 
 ### Dependencies
-- **ASE**: Atomic Simulation Environment
-- **FAIRChem**: ML-accelerated quantum chemistry
-- **PubChemPy**: Molecular database interface
-- **RDKit**: Molecular processing and 3D generation
-- **NumPy**: Numerical computing
-- **SciPy**: Scientific computing (for advanced rotations)
+- **FAIRChem-Core**: ML-accelerated quantum chemistry (`pip install fairchem-core`)
+- **PubChemPy**: Molecular database interface (`pip install pubchempy`)
+- **ASE**: Atomic Simulation Environment (included with fairchem-core)
+- **RDKit**: Molecular processing and 3D generation (optional, for 2D→3D conversion)
+- **NumPy**: Numerical computing (included with fairchem-core)
+- **SciPy**: Scientific computing for advanced rotations (optional)
 
 ### Periodic Boundary Conditions
 All structures use full PBC [True, True, True] for VASP/FAIRChem compatibility.
