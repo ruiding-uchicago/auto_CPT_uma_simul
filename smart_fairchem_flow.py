@@ -334,6 +334,53 @@ class SmartFAIRChemFlow:
                 )
                 optimized[struct_name] = opt_struct
                 convergence_status[struct_name] = converged
+        
+        # Special handling for three-component system
+        # Use optimized probe_substrate as starting point
+        if self.config.get("probe") and self.config.get("target") and self.config.get("substrate") and "probe_substrate" in optimized:
+            print("\n" + "="*60)
+            print("Building three-component system from optimized probe_substrate")
+            print("="*60)
+            
+            # Start with optimized probe_substrate
+            system_three = optimized["probe_substrate"].copy()
+            
+            # Get the current positions
+            substrate_atoms = len(structures["substrate_only"])
+            substrate_top = system_three.positions[:substrate_atoms, 2].max()
+            
+            # Add target above the optimized probe position
+            probe_positions = system_three.positions[substrate_atoms:]
+            probe_center = probe_positions.mean(axis=0)
+            
+            # Load target and position it above probe
+            target_height = self.config.get("target_height", probe_center[2] + 4.0)
+            target_position = np.array([probe_center[0], probe_center[1], target_height])
+            
+            # Add target molecule
+            target_mol = structures["target_vacuum"].copy()
+            target_mol.positions = target_mol.positions - target_mol.positions.mean(axis=0) + target_position
+            
+            # Check for overlaps and adjust if needed
+            min_dist = 2.5
+            for i in range(len(system_three)):
+                for j in range(len(target_mol)):
+                    dist = np.linalg.norm(system_three.positions[i] - target_mol.positions[j])
+                    if dist < min_dist:
+                        # Move target up slightly
+                        target_mol.positions[:, 2] += (min_dist - dist) + 0.5
+                        break
+            
+            system_three.extend(target_mol)
+            
+            # Now optimize the three-component system
+            opt_three, converged_three = self.smart_optimize(
+                system_three,
+                "probe_target_substrate",
+                fix_substrate=True  # Keep substrate fixed
+            )
+            optimized["probe_target_substrate"] = opt_three
+            convergence_status["probe_target_substrate"] = converged_three
                 
         # Calculate interaction energies
         self.calculate_and_report_interactions()
@@ -366,6 +413,29 @@ class SmartFAIRChemFlow:
                 print("  📍 Note: Positive adsorption energy may indicate:")
                 print("     - Local minimum (not global)")
                 print("     - Constrained geometry")
+        
+        # Three-component system interactions
+        if all(k in self.energies for k in ["probe_target_substrate", "probe_substrate", "target_vacuum"]):
+            # Target binding to probe on substrate
+            e_target_binding = self.energies["probe_target_substrate"] - self.energies["probe_substrate"] - self.energies["target_vacuum"]
+            results["target_binding_to_adsorbed_probe"] = e_target_binding
+            print(f"Target binding to adsorbed probe: {e_target_binding:.4f} eV")
+            
+            # Total interaction energy (all three components)
+            if all(k in self.energies for k in ["substrate_only", "probe_vacuum"]):
+                e_total = self.energies["probe_target_substrate"] - self.energies["substrate_only"] - self.energies["probe_vacuum"] - self.energies["target_vacuum"]
+                results["total_three_component_interaction"] = e_total
+                print(f"Total three-component interaction: {e_total:.4f} eV")
+                
+            # Compare with vacuum interaction
+            if "probe_target_vacuum" in results:
+                e_substrate_effect = e_target_binding - results["probe_target_vacuum"]
+                results["substrate_effect_on_binding"] = e_substrate_effect
+                print(f"Substrate effect on probe-target binding: {e_substrate_effect:.4f} eV")
+                if e_substrate_effect < 0:
+                    print("  → Substrate enhances probe-target binding")
+                elif e_substrate_effect > 0:
+                    print("  → Substrate weakens probe-target binding")
                 
         # Save results
         with open(self.output_dir / "interactions.json", 'w', encoding='utf-8') as f:

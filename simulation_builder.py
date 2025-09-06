@@ -526,7 +526,47 @@ class SimulationBuilder:
             else:
                 print("Created: probe_target_vacuum (probe + target in vacuum, target above probe)")
             
-        # Note: full_system removed - user should optimize probe+substrate first, then place target
+        # 6. Three-component system: Probe + Target + Substrate
+        # This will be created after probe_substrate is optimized
+        if self.probe and self.target and self.substrate:
+            # Create the three-component system
+            system_three = self.substrate.copy()
+            
+            # Add probe at its position
+            if probe_position == "auto":
+                center_xy = cell.diagonal()[:2] / 2
+                probe_pos = np.array([center_xy[0], center_xy[1], substrate_top + probe_height])
+            else:
+                probe_pos = probe_position
+            
+            probe_mol = self.apply_transformation(self.probe, probe_pos, probe_orientation)
+            
+            # Check and adjust for overlaps (only if using auto position)
+            if probe_position == "auto":
+                safe_pos = self.find_safe_position(probe_mol, system_three, probe_pos)
+                probe_mol.translate(safe_pos - probe_pos)
+            
+            system_three.extend(probe_mol)
+            
+            # Now add target above the probe
+            if target_position_config == "auto" or target_position_config is None:
+                # Place target above probe
+                target_pos = np.array([center_xy[0], center_xy[1], substrate_top + target_height])
+            else:
+                target_pos = self.parse_position(target_position_config, cell, substrate_top)
+            
+            target_mol = self.apply_transformation(self.target, target_pos, target_orientation_config)
+            
+            # Check for overlaps with the existing system
+            if target_position_config == "auto" or target_position_config is None:
+                safe_target_pos = self.find_safe_position(target_mol, system_three, target_pos, min_dist=2.5)
+                target_mol.translate(safe_target_pos - target_pos)
+            
+            system_three.extend(target_mol)
+            system_three.cell = cell
+            system_three.pbc = pbc
+            structures["probe_target_substrate"] = system_three
+            print("Created: probe_target_substrate (three-component system)")
             
         return structures
         

@@ -110,11 +110,31 @@ class BatchComparison:
             if self.target:
                 # Probe-Target interaction in vacuum
                 if all(k in flow.energies for k in ["probe_target_vacuum", "probe_vacuum", "target_vacuum"]):
-                    result["probe_target_interaction"] = (
+                    result["probe_target_interaction_vacuum"] = (
                         flow.energies["probe_target_vacuum"] - 
                         flow.energies["probe_vacuum"] - 
                         flow.energies["target_vacuum"]
                     )
+                    # Keep backward compatibility
+                    result["probe_target_interaction"] = result["probe_target_interaction_vacuum"]
+                
+                # Three-component system: Target binding to adsorbed probe
+                if substrate != "vacuum":
+                    if all(k in flow.energies for k in ["probe_target_substrate", "probe_substrate", "target_vacuum"]):
+                        result["target_binding_on_substrate"] = (
+                            flow.energies["probe_target_substrate"] - 
+                            flow.energies["probe_substrate"] - 
+                            flow.energies["target_vacuum"]
+                        )
+                        # This is the most relevant interaction for substrate systems
+                        result["probe_target_interaction"] = result["target_binding_on_substrate"]
+                        
+                        # Calculate substrate effect
+                        if "probe_target_interaction_vacuum" in result:
+                            result["substrate_effect"] = (
+                                result["target_binding_on_substrate"] - 
+                                result["probe_target_interaction_vacuum"]
+                            )
                     
             # Probe adsorption on substrate
             if substrate != "vacuum":
@@ -246,11 +266,22 @@ class BatchComparison:
         else:
             f.write("Status: ⚠️ Not converged\n")
             
-        if "probe_target_interaction" in result:
-            f.write(f"Probe-Target interaction: {result['probe_target_interaction']:.4f} eV\n")
+        if "probe_target_interaction_vacuum" in result:
+            f.write(f"Probe-Target interaction (vacuum): {result['probe_target_interaction_vacuum']:.4f} eV\n")
             
+        if "target_binding_on_substrate" in result:
+            f.write(f"Target binding to adsorbed probe: {result['target_binding_on_substrate']:.4f} eV\n")
+            
+        if "substrate_effect" in result:
+            effect = result["substrate_effect"]
+            f.write(f"Substrate effect on binding: {effect:.4f} eV ")
+            if effect < 0:
+                f.write("(enhances binding)\n")
+            else:
+                f.write("(weakens binding)\n")
+                
         if "probe_adsorption" in result:
-            f.write(f"Adsorption energy: {result['probe_adsorption']:.4f} eV\n")
+            f.write(f"Probe adsorption energy: {result['probe_adsorption']:.4f} eV\n")
             
         if result["warnings"]:
             f.write("Warnings:\n")
