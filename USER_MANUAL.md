@@ -213,7 +213,91 @@ E_substrate_effect = E_binding - E_int_vac
 
 ## FAQ
 
-### Q: Why is adsorption energy positive?
+### Python Beginner Questions
+
+#### Q: What is "cd" and how do I use it?
+A: "cd" means "change directory" - it's how you navigate folders in the command line:
+- `cd Desktop` - goes to your Desktop folder
+- `cd ..` - goes back one folder
+- `cd` (by itself) - shows your current location
+- If you get lost, close and reopen Anaconda Prompt to start fresh
+
+#### Q: I get "python: command not found" error?
+A: You need to use **Anaconda Prompt** (not regular Command Prompt):
+1. Click Windows Start Menu
+2. Type "Anaconda Prompt" 
+3. Click to open it
+4. Now try `python` command again
+
+#### Q: How do I know if the simulation is running?
+A: You'll see output like this:
+```
+Building structures...
+SMART OPTIMIZATION
+Optimizing probe_substrate...
+```
+The simulation can take 5-30 minutes. As long as you see new text appearing, it's working!
+
+#### Q: Where are my results?
+A: Results are saved in a `simulations` folder:
+1. Look in the same folder where you ran the command
+2. Open `simulations` folder
+3. Find folder with your molecule names
+4. The `.txt` files can be opened with Notepad
+
+#### Q: I get "No such file or directory" error?
+A: Make sure you're in the right folder:
+1. After extracting RAPIDS, note where you saved it
+2. In Anaconda Prompt, navigate there:
+   - If on Desktop: `cd Desktop/auto_CPT_uma_simul-main`
+   - If in Documents: `cd Documents/auto_CPT_uma_simul-main`
+
+#### Q: Can I close the window while it's running?
+A: No! Keep the Anaconda Prompt window open until you see "COMPLETED SUCCESSFULLY" or similar message.
+
+#### Q: How do I stop a running simulation?
+A: Press `Ctrl+C` (hold Ctrl key and press C) in the Anaconda Prompt window.
+
+#### Q: I get "ModuleNotFoundError: No module named 'fairchem'"?
+A: You need to install the packages first:
+```bash
+pip install fairchem-core
+pip install pubchempy
+```
+Run these commands in Anaconda Prompt, then try your simulation again.
+
+#### Q: How do I create my own simulation?
+A: Create a simple text file with `.json` extension:
+1. Open Notepad
+2. Type:
+   ```json
+   {
+     "probe": "water",
+     "substrate": "Graphene"
+   }
+   ```
+3. Save as `my_test.json` (important: select "All Files" in Save dialog)
+4. Run: `python smart_fairchem_flow.py my_test.json`
+
+#### Q: What molecules can I use?
+A: You can use common chemical names like:
+- Simple molecules: "water", "methane", "ethanol", "glucose"
+- Drugs: "aspirin", "caffeine", "ibuprofen"
+- Any molecule on PubChem - just use its common name!
+
+#### Q: The download is stuck at "Downloading model..."?
+A: The UMA model is large (>1GB). First time download can take 10-30 minutes depending on internet speed. This only happens once - future runs will be fast!
+
+#### Q: Can I run this on my laptop?
+A: Yes! RAPIDS works on regular laptops:
+- Windows 10/11: ✅ Works great
+- Mac: ✅ Works great  
+- 8GB RAM minimum (16GB better)
+- No special graphics card needed (uses CPU by default)
+
+### Scientific Questions
+
+#### Q: Why is adsorption energy positive?
 A: Possible reasons:
 1. Local minimum rather than global minimum
 2. Poor initial positioning
