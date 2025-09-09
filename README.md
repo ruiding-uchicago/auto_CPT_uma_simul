@@ -47,6 +47,24 @@
 
 RAPIDS is designed for researchers with minimal computational chemistry background to perform quick, qualitative dry-lab simulations of probe-target-substrate interactions. Only 2 parameters required to start!
 
+## 🌐 NEW: Web GUI Interface
+
+**Run RAPIDS from your browser!** No command line needed:
+
+```bash
+# Start the web server
+python web_server.py
+
+# Open your browser to http://localhost:5001
+```
+
+The web interface provides:
+- 🎯 **Intuitive molecule input** - Type molecule names or SMILES
+- 📊 **Real-time progress tracking** - Watch simulations as they run
+- 🔬 **Interactive 3D visualization** - Rotate and zoom molecular structures
+- 📈 **Batch screening** - Compare multiple molecules at once
+- 💾 **One-click downloads** - Get results in JSON, VASP, or report format
+
 ## Features
 
 - **Automatic molecule download** from chemical names (PubChem + rare molecules collection)
