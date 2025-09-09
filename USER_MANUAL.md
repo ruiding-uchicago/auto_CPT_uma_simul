@@ -1,5 +1,7 @@
 # FAIRChem Auto-UMA Simulation Toolkit - User Manual
 
+**Version 1.2.0** - Now with Web GUI Interface!
+
 ## Overview
 
 This is an intelligent molecular simulation toolkit based on FAIRChem UMA models, designed for calculating intermolecular interactions and adsorption energies. The system uses machine learning-accelerated quantum chemistry calculations to rapidly evaluate molecular interaction strengths in vacuum or on 2D material surfaces.
@@ -42,6 +44,9 @@ This is an intelligent molecular simulation toolkit based on FAIRChem UMA models
 # Install required packages
 pip install fairchem-core
 pip install pubchempy
+
+# For Web GUI (NEW in v1.2.0)
+pip install flask flask-cors
 
 # Optional: Install additional packages for full functionality
 pip install rdkit scipy
@@ -316,6 +321,59 @@ A: Set in configuration file:
   "device": "cuda"
 }
 ```
+
+## Web GUI Interface (NEW in v1.2.0)
+
+RAPIDS now includes a complete web-based graphical interface for easier interaction with all features!
+
+### Starting the Web Interface
+
+```bash
+# Navigate to RAPIDS directory
+cd auto_CPT_uma_simul
+
+# Start the web server
+python web_server.py
+```
+
+Then open your browser to: **http://localhost:5001**
+
+### Web GUI Features
+
+#### 1. Single Molecule Simulation
+- **Intuitive Input**: Enter molecule names or SMILES directly
+- **Visual Substrate Selection**: Click to choose from 9 available substrates
+- **Real-time Progress**: Watch simulation output stream live
+- **3D Visualization**: Automatic generation of interactive molecular structures
+- **Advanced Parameters**: Easy access to all simulation settings
+
+#### 2. Batch Screening
+- **Multi-molecule Testing**: Input multiple molecules at once
+- **CSV Upload**: Import molecule lists from files
+- **Individual Progress Tracking**: Monitor each simulation separately
+- **Interactive Results Table**: Sort by energy values
+- **Comparison Charts**: Visual bar graphs for energy comparisons
+- **Per-molecule 3D Views**: Access visualization for each result
+
+#### 3. Quick Test Examples
+Pre-configured examples for immediate testing:
+- Water on Graphene
+- Caffeine on MoS2
+- Three-component systems
+
+### Web Interface Advantages
+
+1. **No Command Line Required**: Perfect for beginners
+2. **Real-time Feedback**: See output as calculations run
+3. **Visual Results**: Interactive 3D structures and charts
+4. **Easy Comparison**: Side-by-side molecule screening
+5. **One-click Export**: Download results and visualizations
+
+### Browser Requirements
+
+- Modern browser (Chrome, Firefox, Safari, Edge)
+- JavaScript enabled
+- No installation needed - runs locally
 
 ## Command Line Tools
 
