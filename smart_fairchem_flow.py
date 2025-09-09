@@ -16,6 +16,8 @@ from typing import Dict, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+from version import __version__
+
 from ase import Atoms
 from ase.io import read, write
 from ase.optimize import LBFGS
@@ -457,6 +459,7 @@ class SmartFAIRChemFlow:
             f.write("SMART WORKFLOW REPORT\n")
             f.write("="*60 + "\n\n")
             
+            f.write(f"RAPIDS Version: {__version__}\n")
             f.write(f"System: {self.config.get('probe')} + {self.config.get('target', 'none')}\n")
             f.write(f"Substrate: {self.config.get('substrate', 'vacuum')}\n")
             f.write(f"Task: {self.task_name}\n")
@@ -487,7 +490,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Smart FAIRChem workflow with intelligent features",
+        description=f"RAPIDS Smart FAIRChem workflow v{__version__}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Minimal configuration example:
@@ -502,6 +505,7 @@ Everything else is automatically determined!
     )
     
     parser.add_argument("config", help="JSON configuration file")
+    parser.add_argument("--version", action="version", version=f"RAPIDS v{__version__}")
     args = parser.parse_args()
     
     # Run smart workflow
