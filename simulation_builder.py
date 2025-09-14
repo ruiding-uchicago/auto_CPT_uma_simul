@@ -433,7 +433,7 @@ class SimulationBuilder:
             probe_orientation = self.parse_orientation(probe_orientation_config)
             
             # Use automatic positioning if not specified
-            if probe_position == "auto":
+            if isinstance(probe_position, str) and probe_position == "auto":
                 center_xy = cell.diagonal()[:2] / 2
                 probe_pos = np.array([center_xy[0], center_xy[1], substrate_top + probe_height])
             else:
@@ -443,7 +443,7 @@ class SimulationBuilder:
             probe_mol = self.apply_transformation(self.probe, probe_pos, probe_orientation)
             
             # Check and adjust for overlaps (only if using auto position)
-            if probe_position == "auto":
+            if isinstance(probe_position, str) and probe_position == "auto":
                 safe_pos = self.find_safe_position(probe_mol, system_probe_sub, probe_pos)
                 probe_mol.translate(safe_pos - probe_pos)
             
@@ -454,7 +454,7 @@ class SimulationBuilder:
             structures["probe_substrate"] = system_probe_sub
             
             # Report what was used
-            if probe_position != "auto" or probe_orientation != "auto":
+            if not (isinstance(probe_position, str) and probe_position == "auto") or not (isinstance(probe_orientation, str) and probe_orientation == "auto"):
                 print(f"Created: probe_substrate (custom placement)")
             else:
                 print("Created: probe_substrate")
@@ -494,7 +494,7 @@ class SimulationBuilder:
             target_orientation_vac = self.parse_orientation(target_orientation_config)
             
             # Position probe
-            if probe_position_vac == "auto":
+            if isinstance(probe_position_vac, str) and probe_position_vac == "auto":
                 probe_pos = np.array([center_xy[0], center_xy[1], cell[2,2]/2 - probe_target_distance/2])
             else:
                 probe_pos = probe_position_vac
@@ -503,7 +503,7 @@ class SimulationBuilder:
             vacuum_box.extend(probe_mol)
             
             # Position target
-            if target_position_vac == "auto":
+            if isinstance(target_position_vac, str) and target_position_vac == "auto":
                 target_pos = np.array([center_xy[0], center_xy[1], cell[2,2]/2 + probe_target_distance/2])
             else:
                 target_pos = target_position_vac
@@ -511,7 +511,7 @@ class SimulationBuilder:
             target_mol = self.apply_transformation(self.target, target_pos, target_orientation_vac)
             
             # Check and fix overlap (only if using auto positions)
-            if probe_position_vac == "auto" and target_position_vac == "auto":
+            if isinstance(probe_position_vac, str) and probe_position_vac == "auto" and isinstance(target_position_vac, str) and target_position_vac == "auto":
                 safe_target_pos = self.find_safe_position(target_mol, vacuum_box, target_pos, min_dist=2.5)
                 target_mol.translate(safe_target_pos - target_pos)
             
@@ -519,8 +519,8 @@ class SimulationBuilder:
             structures["probe_target_vacuum"] = vacuum_box
             
             # Report what was used
-            custom_used = (probe_position_vac != "auto" or probe_orientation_vac != "auto" or 
-                          target_position_vac != "auto" or target_orientation_vac != "auto")
+            custom_used = (not (isinstance(probe_position_vac, str) and probe_position_vac == "auto") or not (isinstance(probe_orientation_vac, str) and probe_orientation_vac == "auto") or 
+                          not (isinstance(target_position_vac, str) and target_position_vac == "auto") or not (isinstance(target_orientation_vac, str) and target_orientation_vac == "auto"))
             if custom_used:
                 print("Created: probe_target_vacuum (custom placement)")
             else:
@@ -537,7 +537,7 @@ class SimulationBuilder:
             probe_orientation = self.parse_orientation(probe_orientation_config)
             
             # Add probe at its position
-            if probe_position == "auto":
+            if isinstance(probe_position, str) and probe_position == "auto":
                 center_xy = cell.diagonal()[:2] / 2
                 probe_pos = np.array([center_xy[0], center_xy[1], substrate_top + probe_height])
             else:
@@ -546,7 +546,7 @@ class SimulationBuilder:
             probe_mol = self.apply_transformation(self.probe, probe_pos, probe_orientation)
             
             # Check and adjust for overlaps (only if using auto position)
-            if probe_position == "auto":
+            if isinstance(probe_position, str) and probe_position == "auto":
                 safe_pos = self.find_safe_position(probe_mol, system_three, probe_pos)
                 probe_mol.translate(safe_pos - probe_pos)
             
