@@ -682,6 +682,13 @@
                         </select>
                     </div>
                     <div class="form-group">
+                        <label>FAIRChem Task</label>
+                        <select id="task">
+                            <option value="omat" selected>OMAT (Default)</option>
+                            <option value="oc20">OC20</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label>Force Convergence (eV/Å)</label>
                         <input type="number" id="fmax" value="0.05" step="0.01">
                     </div>
@@ -718,6 +725,9 @@
             <!-- Results -->
             <div id="results" style="display: none;">
                 <h3>Results</h3>
+                <div style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6; margin-bottom: 10px;">
+                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable binding.
+                </div>
                 <div class="results-grid">
                     <div class="result-card">
                         <div>Adsorption Energy</div>
@@ -762,8 +772,8 @@
             
             <div class="form-row">
                 <div class="form-group">
-                    <label>Target (Optional)</label>
-                    <input type="text" id="batch-target" placeholder="Common target for all probes">
+                    <label>Targets (Optional, one per line)</label>
+                    <textarea id="batch-targets" rows="3" placeholder="e.g.\ncaffeine\naspirin"></textarea>
                 </div>
                 <div class="form-group">
                     <label>Substrate</label>
@@ -789,6 +799,13 @@
             <!-- Batch Results -->
             <div id="batch-results" style="display: none;">
                 <h3>Screening Results</h3>
+                <div id="batch-target-selector" style="display: none; margin-bottom: 15px;">
+                    <label style="display: block; color: var(--neon-green); font-family: 'Orbitron', monospace; margin-bottom: 6px;">Select Target</label>
+                    <select id="batch-results-target" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--cyber-primary); background: rgba(0, 20, 40, 0.6); color: var(--cyber-primary);"></select>
+                </div>
+                <div style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6; margin-bottom: 10px;">
+                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable binding.
+                </div>
                 <canvas id="batch-chart" style="margin: 20px 0;"></canvas>
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
@@ -809,6 +826,7 @@
         <div id="quick-tab" class="tab-content">
             <h3>Quick Test Examples</h3>
             <p>Click any example to run immediately:</p>
+            <p style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6;">Energy reference: Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Negative values denote favourable binding.</p>
             
             <div style="display: grid; gap: 10px; margin-top: 20px;">
                 <button class="btn btn-primary" onclick="quickRun('glucose', 'Graphene')">
@@ -887,6 +905,7 @@
                 target: document.getElementById('target').value || null,
                 substrate: document.querySelector('.substrate-option.selected').dataset.value,
                 model_name: document.getElementById('model').value,
+                task_name: document.getElementById('task').value,
                 fmax: parseFloat(document.getElementById('fmax').value),
                 max_steps: parseInt(document.getElementById('max_steps').value),
                 device: document.getElementById('device').value
@@ -1073,7 +1092,7 @@
                     return;
                 }
 
-                const targetElement = document.getElementById('batch-target');
+                const targetElement = document.getElementById('batch-targets');
                 const substrateElement = document.getElementById('batch-substrate');
                 
                 if (!targetElement || !substrateElement) {
@@ -1081,8 +1100,16 @@
                     return;
                 }
 
-                const target = targetElement.value.trim();
+                const rawTargets = targetElement.value
+                    .split(/\n|,/)
+                    .map(t => t.trim())
+                    .filter(t => t.length > 0);
+                const target = rawTargets.length === 1 ? rawTargets[0] : '';
                 const substrate = substrateElement.value;
+                const modelSelect = document.getElementById('model');
+                const taskSelect = document.getElementById('task');
+                const modelName = modelSelect ? modelSelect.value : 'uma-s-1p1';
+                const taskName = taskSelect ? taskSelect.value : 'omat';
             
             // Show progress container
             const batchList = document.getElementById('batch-list');
@@ -1119,16 +1146,25 @@
             addBatchOutput('Starting batch screening...', '#4caf50');
 
             try {
+                const payload = {
+                    molecules: molecules,
+                    substrate: substrate,
+                    model_name: modelName,
+                    task_name: taskName
+                };
+
+                if (rawTargets.length > 1) {
+                    payload.targets = rawTargets;
+                } else if (target) {
+                    payload.target = target;
+                }
+
                 const response = await fetch('/batch', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        molecules: molecules,
-                        target: target,
-                        substrate: substrate
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) {
@@ -1209,47 +1245,118 @@
             }
         }
         
+        function formatTargetLabel(targetKey) {
+            if (!targetKey || targetKey === '__no_target__' || targetKey === 'null') {
+                return 'No target (self-interaction)';
+            }
+            return targetKey;
+        }
+
         function showBatchResults(results) {
             document.getElementById('batch-results').style.display = 'block';
-            
-            // Parse the batch comparison results format
-            let processedResults = [];
-            
-            if (results && results.results) {
-                // Extract results for each probe
-                const substrate = results.config?.substrate || 'unknown';
-                const substrateResults = results.results[substrate];
-                
-                if (substrateResults) {
-                    for (const [probe, data] of Object.entries(substrateResults)) {
-                        processedResults.push({
-                            molecule: probe,
-                            // Use direct fields, not nested under 'interactions'
-                            adsorption: data.probe_adsorption || 0,
-                            interaction: data.probe_target_interaction_vacuum || data.probe_target_interaction || 0,
-                            total: data.target_binding_on_substrate || 0
-                        });
-                    }
-                }
+
+            if (!results || !results.results) {
+                return;
             }
-            
-            // Sort by total energy (more negative = better binding)
+
+            window.batchResults = results;
+            const substrate = results.config?.substrate || (Array.isArray(results.config?.substrates) ? results.config.substrates[0] : 'unknown');
+            const substrateResults = results.results[substrate];
+
+            if (!substrateResults) {
+                return;
+            }
+
+            const firstValue = Object.values(substrateResults)[0];
+            const isNested = firstValue && typeof firstValue === 'object' && !('probe' in firstValue);
+            const targetMap = isNested ? substrateResults : { '__no_target__': substrateResults };
+
+            window.batchTargetMap = targetMap;
+            window.batchSubstrate = substrate;
+            window.batchResultsData = results;
+
+            const selectorDiv = document.getElementById('batch-target-selector');
+            const selector = document.getElementById('batch-results-target');
+            selector.innerHTML = '';
+
+            const targetEntries = Object.keys(targetMap);
+            if (targetEntries.length === 0) {
+                return;
+            }
+            targetEntries.forEach(key => {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = formatTargetLabel(key);
+                selector.appendChild(option);
+            });
+
+            if (targetEntries.length > 1) {
+                selectorDiv.style.display = 'block';
+            } else {
+                selectorDiv.style.display = 'none';
+            }
+
+            selector.onchange = function() {
+                renderBatchResults(this.value);
+            };
+
+            const initialKey = targetEntries[0];
+            selector.value = initialKey;
+            renderBatchResults(initialKey);
+
+            // Add button to view comparison plot (persistent)
+            const resultsSection = document.getElementById('batch-results');
+            if (!document.getElementById('view-batch-viz')) {
+                const vizButton = document.createElement('button');
+                vizButton.id = 'view-batch-viz';
+                vizButton.className = 'btn btn-primary';
+                vizButton.style.marginTop = '20px';
+                vizButton.innerHTML = '📊 View Comparison Plot';
+                vizButton.onclick = function() {
+                    if (window.batchDir) {
+                        window.open(`/visualization/${window.batchDir}/energy_comparison.png`, '_blank');
+                    } else {
+                        alert('Visualization not available yet');
+                    }
+                };
+                resultsSection.appendChild(vizButton);
+            }
+        }
+
+        function renderBatchResults(targetKey) {
+            if (!window.batchTargetMap) {
+                return;
+            }
+
+            const targetData = window.batchTargetMap[targetKey];
+            if (!targetData) {
+                return;
+            }
+
+            const processedResults = [];
+            Object.entries(targetData).forEach(([probe, data]) => {
+                processedResults.push({
+                    molecule: probe,
+                    adsorption: data.probe_adsorption ?? 0,
+                    interaction: data.probe_target_interaction ?? data.probe_target_interaction_vacuum ?? 0,
+                    total: data.target_binding_on_substrate ?? data.probe_target_interaction ?? data.probe_target_interaction_vacuum ?? 0
+                });
+            });
+
             processedResults.sort((a, b) => a.total - b.total);
-            
-            // Create chart
-            const ctx = document.getElementById('batch-chart').getContext('2d');
-            
-            // Set canvas background to white
+
             const canvas = document.getElementById('batch-chart');
             canvas.style.backgroundColor = '#ffffff';
             canvas.style.borderRadius = '8px';
             canvas.style.border = '1px solid #ddd';
-            
-            // Clear previous chart if exists
+
             if (window.batchChartInstance) {
                 window.batchChartInstance.destroy();
             }
-            
+
+            const ctx = canvas.getContext('2d');
+            const targetLabel = formatTargetLabel(targetKey);
+
             window.batchChartInstance = new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -1283,7 +1390,7 @@
                     plugins: {
                         title: {
                             display: true,
-                            text: 'Batch Screening Results',
+                            text: `Batch Screening Results - ${targetLabel}`,
                             color: '#333333',
                             font: {
                                 family: 'Arial, sans-serif',
@@ -1334,22 +1441,26 @@
                             }
                         }
                     },
-                    // 关键：设置图表背景为白色
                     layout: {
                         padding: 10
                     },
                     backgroundColor: '#ffffff'
                 }
             });
-            
-            // Fill table
+
             const tbody = document.getElementById('batch-table');
             tbody.innerHTML = '';
+            const substrate = window.batchSubstrate || 'vacuum';
+            const targetForPath = (!targetKey || targetKey === '__no_target__' || targetKey === 'null') ? '' : targetKey;
+
             processedResults.forEach((r, i) => {
-                // Find visualization link for this molecule
                 let vizButton = 'Pending...';
                 if (window.vizLinks && window.vizLinks.length > 0) {
-                    const vizLink = window.vizLinks.find(v => v.molecule.toLowerCase() === r.molecule.toLowerCase());
+                    const vizLink = window.vizLinks.find(v => {
+                        const linkTarget = (v.target || '').toLowerCase();
+                        const desiredTarget = targetForPath.toLowerCase();
+                        return v.molecule.toLowerCase() === r.molecule.toLowerCase() && linkTarget === desiredTarget;
+                    });
                     if (vizLink) {
                         vizButton = `<button class="btn btn-primary" style="padding: 5px 10px; font-size: 12px;" 
                                       onclick="window.open('/visualization/${vizLink.url}', '_blank')">
@@ -1359,16 +1470,14 @@
                         vizButton = 'Not found';
                     }
                 } else {
-                    // Check if visualization file exists based on naming pattern
-                    const target = window.batchResults?.config?.target || '';
-                    const substrate = window.batchResults?.config?.substrate || 'vacuum';
-                    const expectedUrl = `${r.molecule}_${target}_${substrate}/visualization.html`;
+                    const prefix = targetForPath ? `${r.molecule}_${targetForPath}_${substrate}` : `${r.molecule}_${substrate}`;
+                    const expectedUrl = `${prefix}/visualization.html`;
                     vizButton = `<button class="btn btn-primary" style="padding: 5px 10px; font-size: 12px;" 
                                   onclick="window.open('/visualization/${expectedUrl}', '_blank')">
                                   🔬 View 3D
                                  </button>`;
                 }
-                
+
                 tbody.innerHTML += `
                     <tr>
                         <td style="padding: 10px;">${i + 1}</td>
@@ -1379,25 +1488,6 @@
                     </tr>
                 `;
             });
-            
-            // Add button to view comparison plot
-            const resultsSection = document.getElementById('batch-results');
-            if (!document.getElementById('view-batch-viz')) {
-                const vizButton = document.createElement('button');
-                vizButton.id = 'view-batch-viz';
-                vizButton.className = 'btn btn-primary';
-                vizButton.style.marginTop = '20px';
-                vizButton.innerHTML = '📊 View Comparison Plot';
-                vizButton.onclick = function() {
-                    // Open the generated PNG plot using the actual directory name
-                    if (window.batchDir) {
-                        window.open(`/visualization/${window.batchDir}/energy_comparison.png`, '_blank');
-                    } else {
-                        alert('Visualization not available yet');
-                    }
-                };
-                resultsSection.appendChild(vizButton);
-            }
         }
         
         function quickRun(probe, substrate, target = null) {

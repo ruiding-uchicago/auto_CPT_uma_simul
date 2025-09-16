@@ -166,6 +166,13 @@ Results in `simulations/[run_name]/`:
   - Substrate effect on binding
 - Analysis report (`smart_report.txt`)
 
+### Energy Definitions (all values in eV)
+- **Adsorption energy** = E(probe+substrate) − E(probe) − E(substrate)
+- **Interaction energy (vacuum)** = E(probe+target in vacuum) − E(probe) − E(target)
+- **Total three-component binding** = E(probe+target+substrate) − E(probe) − E(target) − E(substrate)
+
+Negative values indicate the process releases energy (favorable binding); positive values mean the configuration is energetically unfavourable compared to separated components.
+
 ## Documentation
 
 See [USER_MANUAL.md](USER_MANUAL.md) for detailed parameters and troubleshooting.

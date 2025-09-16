@@ -44,7 +44,22 @@ class BatchComparison:
                 raise ValueError("Must specify 'probes' (list) or 'probe' (single)")
                 
         self.probes = self.config["probes"]
-        self.target = self.config.get("target", None)
+
+        # Support multiple targets (optional)
+        self.targets = []
+        if "targets" in self.config:
+            raw_targets = self.config["targets"]
+            if isinstance(raw_targets, list):
+                self.targets = [t for t in raw_targets if t]
+            elif raw_targets:
+                self.targets = [raw_targets]
+        elif "target" in self.config:
+            target_value = self.config.get("target")
+            if target_value:
+                self.targets = [target_value]
+
+        # Backward compatibility helpers
+        self.target = self.targets[0] if self.targets else None
         
         # Support both single substrate and multiple substrates
         if "substrates" in self.config:
@@ -67,7 +82,10 @@ class BatchComparison:
         
     def generate_comparison_name(self) -> str:
         """Generate descriptive name for comparison run"""
-        target_str = self.target if self.target else "nosol"
+        if len(self.targets) > 1:
+            target_str = f"{len(self.targets)}targets"
+        else:
+            target_str = self.target if self.target else "nosol"
         if len(self.substrates) == 1:
             substrate_str = self.substrates[0].lower().replace(" ", "")
         else:
@@ -75,14 +93,17 @@ class BatchComparison:
         n_probes = len(self.probes)
         return f"{target_str}_{substrate_str}_{n_probes}probes"
         
-    def run_single_probe(self, probe: str, substrate: str = None) -> Dict:
+    def run_single_probe(self, probe: str, substrate: str = None, target: str = None) -> Dict:
         """Run simulation for a single probe on a specific substrate"""
         
         if substrate is None:
             substrate = self.substrates[0] if self.substrates else "vacuum"
         
         print("\n" + "="*60)
-        print(f"PROCESSING: {probe} on {substrate}")
+        if target:
+            print(f"PROCESSING: {probe} with target {target} on {substrate}")
+        else:
+            print(f"PROCESSING: {probe} (no target) on {substrate}")
         print("="*60)
         
         # Create configuration for this probe-substrate combination
@@ -91,7 +112,14 @@ class BatchComparison:
         single_config["substrate"] = substrate
         single_config.pop("probes", None)  # Remove probes list
         single_config.pop("substrates", None)  # Remove substrates list
-        single_config["run_name"] = f"{probe}_{self.target}_{substrate}"
+        single_config.pop("targets", None)
+
+        if target:
+            single_config["target"] = target
+            single_config["run_name"] = f"{probe}_{target}_{substrate}"
+        else:
+            single_config.pop("target", None)
+            single_config["run_name"] = f"{probe}_{substrate}"
         
         # Run FAIRChem workflow
         try:
@@ -101,13 +129,14 @@ class BatchComparison:
             # Extract results
             result = {
                 "probe": probe,
+                "target": target,
                 "energies": flow.energies.copy(),
                 "warnings": flow.warnings.copy(),
                 "converged": True
             }
             
             # Calculate interaction energies
-            if self.target:
+            if target:
                 # Probe-Target interaction in vacuum
                 if all(k in flow.energies for k in ["probe_target_vacuum", "probe_vacuum", "target_vacuum"]):
                     result["probe_target_interaction_vacuum"] = (
@@ -151,6 +180,7 @@ class BatchComparison:
             print(f"Error processing {probe}: {e}")
             return {
                 "probe": probe,
+                "target": target,
                 "energies": {},
                 "warnings": [f"Failed: {str(e)}"],
                 "converged": False
@@ -159,33 +189,46 @@ class BatchComparison:
     def run_comparison(self):
         """Run comparison for all probes on all substrates"""
         
+        target_desc = ', '.join(self.targets) if self.targets else 'None (self-interaction)'
+
         print("\n" + "="*60)
         print("BATCH COMPARISON WORKFLOW")
         print("="*60)
-        print(f"Target: {self.target if self.target else 'None (self-interaction)'}")
+        print(f"Targets: {target_desc}")
         print(f"Substrates: {', '.join(self.substrates)}")
         print(f"Number of probes: {len(self.probes)}")
         print(f"Probes: {', '.join(self.probes)}")
-        print(f"Total simulations: {len(self.probes) * len(self.substrates)}")
+
+        n_targets = len(self.targets) if self.targets else 1
+        print(f"Total simulations: {len(self.probes) * len(self.substrates) * n_targets}")
         
         # Process each probe-substrate combination
         sim_count = 0
-        total_sims = len(self.probes) * len(self.substrates)
-        
+        total_sims = len(self.probes) * len(self.substrates) * n_targets
+
         for substrate in self.substrates:
             print(f"\n{'='*60}")
             print(f"SUBSTRATE: {substrate}")
             print(f"{'='*60}")
-            
-            for probe in self.probes:
-                sim_count += 1
-                print(f"\n[{sim_count}/{total_sims}] Processing {probe} on {substrate}...")
-                result = self.run_single_probe(probe, substrate)
-                
-                # Store results with substrate as key
-                if substrate not in self.results:
-                    self.results[substrate] = {}
-                self.results[substrate][probe] = result
+
+            target_loop = self.targets if self.targets else [None]
+
+            for target in target_loop:
+                target_label = target if target else "None"
+                print(f"\n--- TARGET: {target_label} ---")
+
+                for probe in self.probes:
+                    sim_count += 1
+                    print(f"\n[{sim_count}/{total_sims}] Processing {probe} on {substrate} (target: {target_label})...")
+                    result = self.run_single_probe(probe, substrate, target)
+
+                    # Store results with substrate and target as keys
+                    if substrate not in self.results:
+                        self.results[substrate] = {}
+                    target_key = target if target else "__no_target__"
+                    if target_key not in self.results[substrate]:
+                        self.results[substrate][target_key] = {}
+                    self.results[substrate][target_key][probe] = result
             
         # Analyze and rank results
         self.analyze_results()
@@ -201,63 +244,43 @@ class BatchComparison:
         
     def analyze_results(self):
         """Analyze and rank probe molecules for each substrate"""
-        
-        # Handle both old (flat) and new (nested) result structures
-        if len(self.substrates) == 1 and self.substrates[0] in self.results:
-            # New nested structure with single substrate
-            flat_results = self.results[self.substrates[0]]
-        elif any(isinstance(v, dict) and "energies" in v for v in self.results.values()):
-            # Old flat structure (backward compatibility)
-            flat_results = self.results
-        else:
-            # New nested structure with multiple substrates
-            # Analyze per substrate
-            self.rankings = {}
-            for substrate in self.substrates:
-                if substrate not in self.results:
-                    continue
-                    
+        self.rankings = {}
+
+        for substrate, target_map in self.results.items():
+            if substrate not in self.rankings:
+                self.rankings[substrate] = {}
+
+            if not target_map:
+                continue
+
+            # Backward compatibility: handle flat probe->result mapping
+            first_value = next(iter(target_map.values())) if isinstance(target_map, dict) and target_map else None
+            if first_value and isinstance(first_value, dict) and "probe" in first_value:
+                wrapped_map = {"__no_target__": target_map}
+            else:
+                wrapped_map = target_map
+
+            for target_key, probe_results in wrapped_map.items():
                 interaction_energies = {}
                 adsorption_energies = {}
-                
-                for probe, result in self.results[substrate].items():
+
+                for probe, result in probe_results.items():
                     if "probe_target_interaction" in result:
                         interaction_energies[probe] = result["probe_target_interaction"]
+                    elif "probe_target_interaction_vacuum" in result:
+                        interaction_energies[probe] = result["probe_target_interaction_vacuum"]
+
                     if "probe_adsorption" in result:
                         adsorption_energies[probe] = result["probe_adsorption"]
-                
-                # Store rankings per substrate
-                if substrate not in self.rankings:
-                    self.rankings[substrate] = {}
-                    
+
+                rankings_entry = {}
                 if interaction_energies:
-                    sorted_interactions = sorted(interaction_energies.items(), key=lambda x: x[1])
-                    self.rankings[substrate]["interaction"] = sorted_interactions
-                    
+                    rankings_entry["interaction"] = sorted(interaction_energies.items(), key=lambda x: x[1])
                 if adsorption_energies:
-                    sorted_adsorptions = sorted(adsorption_energies.items(), key=lambda x: x[1])
-                    self.rankings[substrate]["adsorption"] = sorted_adsorptions
-            return
-            
-        # Single substrate case (backward compatible)
-        interaction_energies = {}
-        adsorption_energies = {}
-        
-        for probe, result in flat_results.items():
-            if "probe_target_interaction" in result:
-                interaction_energies[probe] = result["probe_target_interaction"]
-            if "probe_adsorption" in result:
-                adsorption_energies[probe] = result["probe_adsorption"]
-                
-        # Rank by interaction energy (more negative = better)
-        if interaction_energies:
-            sorted_interactions = sorted(interaction_energies.items(), key=lambda x: x[1])
-            self.rankings["interaction"] = sorted_interactions
-            
-        # Rank by adsorption energy (more negative = better)
-        if adsorption_energies:
-            sorted_adsorptions = sorted(adsorption_energies.items(), key=lambda x: x[1])
-            self.rankings["adsorption"] = sorted_adsorptions
+                    rankings_entry["adsorption"] = sorted(adsorption_energies.items(), key=lambda x: x[1])
+
+                if rankings_entry:
+                    self.rankings[substrate][target_key] = rankings_entry
     
     def _write_result_details(self, f, result):
         """Helper method to write result details to file"""
@@ -266,6 +289,11 @@ class BatchComparison:
         else:
             f.write("Status: ⚠️ Not converged\n")
             
+        if result.get("target"):
+            f.write(f"Target: {result['target']}\n")
+        else:
+            f.write("Target: None (self-interaction)\n")
+
         if "probe_target_interaction_vacuum" in result:
             f.write(f"Probe-Target interaction (vacuum): {result['probe_target_interaction_vacuum']:.4f} eV\n")
             
@@ -298,119 +326,104 @@ class BatchComparison:
             f.write("BATCH COMPARISON REPORT\n")
             f.write("="*70 + "\n\n")
             
-            f.write(f"Target molecule: {self.target if self.target else 'None'}\n")
+            target_desc = ', '.join(self.targets) if self.targets else 'None (self-interaction)'
+
+            f.write(f"Targets: {target_desc}\n")
             f.write(f"Substrates: {', '.join(self.substrates)}\n")
             f.write(f"Number of probes tested: {len(self.probes)}\n")
             f.write(f"Probes: {', '.join(self.probes)}\n")
-            f.write(f"Total simulations: {len(self.probes) * len(self.substrates)}\n\n")
-            
-            # Interaction energy ranking
-            if "interaction" in self.rankings and self.rankings["interaction"]:
-                f.write("="*70 + "\n")
-                f.write("PROBE-TARGET INTERACTION ENERGIES (Ranked)\n")
-                f.write("-"*70 + "\n")
-                f.write(f"{'Rank':<6} {'Probe':<20} {'Energy (eV)':<15} {'Relative (eV)':<15}\n")
-                f.write("-"*70 + "\n")
-                
-                best_energy = self.rankings["interaction"][0][1]
-                for i, (probe, energy) in enumerate(self.rankings["interaction"], 1):
-                    relative = energy - best_energy
-                    status = "✓ BEST" if i == 1 else ""
-                    f.write(f"{i:<6} {probe:<20} {energy:>12.4f}    {relative:>12.4f}  {status}\n")
-                    
-                f.write("\n")
-                
-            # Adsorption energy ranking
-            if "adsorption" in self.rankings and self.rankings["adsorption"]:
-                f.write("="*70 + "\n")
-                f.write("ADSORPTION ENERGIES ON SUBSTRATE (Ranked)\n")
-                f.write("-"*70 + "\n")
-                f.write(f"{'Rank':<6} {'Probe':<20} {'Energy (eV)':<15} {'Relative (eV)':<15}\n")
-                f.write("-"*70 + "\n")
-                
-                best_energy = self.rankings["adsorption"][0][1]
-                for i, (probe, energy) in enumerate(self.rankings["adsorption"], 1):
-                    relative = energy - best_energy
-                    status = "✓ BEST" if i == 1 else ""
-                    f.write(f"{i:<6} {probe:<20} {energy:>12.4f}    {relative:>12.4f}  {status}\n")
-                    
-                f.write("\n")
-                
-            # Handle multiple substrates case
-            if len(self.substrates) > 1:
-                for substrate in self.substrates:
-                    if substrate not in self.rankings:
-                        continue
-                    f.write(f"\n{'='*70}\n")
-                    f.write(f"SUBSTRATE: {substrate}\n")
-                    f.write(f"{'='*70}\n\n")
-                    
-                    # Rankings for this substrate
-                    if "interaction" in self.rankings[substrate]:
-                        f.write("Probe-Target Interaction Ranking:\n")
-                        f.write("-"*40 + "\n")
-                        for i, (probe, energy) in enumerate(self.rankings[substrate]["interaction"], 1):
-                            f.write(f"{i}. {probe}: {energy:.4f} eV\n")
-                        f.write("\n")
-                    
-                    if "adsorption" in self.rankings[substrate]:
-                        f.write("Adsorption Energy Ranking:\n")
-                        f.write("-"*40 + "\n")
-                        for i, (probe, energy) in enumerate(self.rankings[substrate]["adsorption"], 1):
-                            f.write(f"{i}. {probe}: {energy:.4f} eV\n")
-                        f.write("\n")
-            
-            # Detailed results for each probe
+
+            n_targets = len(self.targets) if self.targets else 1
+            f.write(f"Total simulations: {len(self.probes) * len(self.substrates) * n_targets}\n\n")
+
+            def format_target_label(key: str) -> str:
+                if key in (None, "__no_target__", "null"):
+                    return "None (self-interaction)"
+                return key
+
+            # Rankings organized by substrate and target
+            for substrate, rankings_per_target in self.rankings.items():
+                if not rankings_per_target:
+                    continue
+
+                f.write(f"{'='*70}\n")
+                f.write(f"SUBSTRATE: {substrate}\n")
+                f.write(f"{'='*70}\n")
+
+                for target_key, metrics in rankings_per_target.items():
+                    target_label = format_target_label(target_key)
+                    f.write(f"\nTARGET: {target_label}\n")
+                    f.write("-"*70 + "\n")
+
+                    if "interaction" in metrics and metrics["interaction"]:
+                        f.write("Probe-Target Interaction Energies (eV)\n")
+                        f.write(f"{'Rank':<6} {'Probe':<20} {'Energy':>12} {'Δ vs Best':>14}\n")
+                        f.write("-"*60 + "\n")
+                        best_energy = metrics["interaction"][0][1]
+                        for i, (probe, energy) in enumerate(metrics["interaction"], 1):
+                            relative = energy - best_energy
+                            status = " ✓" if i == 1 else ""
+                            f.write(f"{i:<6} {probe:<20} {energy:>12.4f} {relative:>14.4f}{status}\n")
+
+                    if "adsorption" in metrics and metrics["adsorption"]:
+                        f.write("\nAdsorption Energies (eV)\n")
+                        f.write(f"{'Rank':<6} {'Probe':<20} {'Energy':>12} {'Δ vs Best':>14}\n")
+                        f.write("-"*60 + "\n")
+                        best_energy = metrics["adsorption"][0][1]
+                        for i, (probe, energy) in enumerate(metrics["adsorption"], 1):
+                            relative = energy - best_energy
+                            status = " ✓" if i == 1 else ""
+                            f.write(f"{i:<6} {probe:<20} {energy:>12.4f} {relative:>14.4f}{status}\n")
+
+                    f.write("\n")
+
+            # Detailed results across all combinations
             f.write("="*70 + "\n")
             f.write("DETAILED RESULTS\n")
-            f.write("="*70 + "\n\n")
-            
-            # Handle different result structures
-            if len(self.substrates) == 1 and self.substrates[0] in self.results:
-                # Single substrate with nested structure
-                substrate = self.substrates[0]
-                for probe in self.probes:
-                    if probe in self.results[substrate]:
-                        result = self.results[substrate][probe]
-                        f.write(f"\n>>> {probe} on {substrate}\n")
-                        f.write("-"*40 + "\n")
-                        self._write_result_details(f, result)
-            elif len(self.substrates) > 1:
-                # Multiple substrates
-                for substrate in self.substrates:
-                    if substrate not in self.results:
-                        continue
-                    for probe in self.probes:
-                        if probe in self.results[substrate]:
-                            result = self.results[substrate][probe]
-                            f.write(f"\n>>> {probe} on {substrate}\n")
-                            f.write("-"*40 + "\n")
-                            self._write_result_details(f, result)
-            else:
-                # Old flat structure (backward compatibility)
-                for probe in self.probes:
-                    if probe in self.results:
-                        result = self.results[probe]
+            f.write("="*70 + "\n")
+
+            for substrate, stored_results in self.results.items():
+                if not stored_results:
+                    continue
+
+                first_value = next(iter(stored_results.values())) if stored_results else None
+                if first_value and isinstance(first_value, dict) and "probe" in first_value:
+                    target_wrapped = {"__no_target__": stored_results}
+                else:
+                    target_wrapped = stored_results
+
+                for target_key, probe_map in target_wrapped.items():
+                    target_label = format_target_label(target_key)
+                    f.write(f"\n--- Substrate: {substrate} | Target: {target_label} ---\n")
+
+                    for probe, result in probe_map.items():
                         f.write(f"\n>>> {probe}\n")
                         f.write("-"*40 + "\n")
                         self._write_result_details(f, result)
-                        
-            # Summary statistics
+
+            # Summary statistics per combination
             f.write("\n" + "="*70 + "\n")
             f.write("SUMMARY STATISTICS\n")
             f.write("-"*70 + "\n")
-            
-            if "interaction" in self.rankings and len(self.rankings["interaction"]) > 1:
-                energies = [e for _, e in self.rankings["interaction"]]
-                f.write(f"Interaction energy range: {min(energies):.4f} to {max(energies):.4f} eV\n")
-                f.write(f"Mean interaction energy: {np.mean(energies):.4f} eV\n")
-                f.write(f"Std deviation: {np.std(energies):.4f} eV\n")
-                
-            if "adsorption" in self.rankings and len(self.rankings["adsorption"]) > 1:
-                energies = [e for _, e in self.rankings["adsorption"]]
-                f.write(f"Adsorption energy range: {min(energies):.4f} to {max(energies):.4f} eV\n")
-                f.write(f"Mean adsorption energy: {np.mean(energies):.4f} eV\n")
-                f.write(f"Std deviation: {np.std(energies):.4f} eV\n")
+
+            for substrate, rankings_per_target in self.rankings.items():
+                for target_key, metrics in rankings_per_target.items():
+                    if ("interaction" in metrics and len(metrics["interaction"]) > 1) or (
+                        "adsorption" in metrics and len(metrics["adsorption"]) > 1):
+                        target_label = format_target_label(target_key)
+                        f.write(f"\nSubstrate: {substrate} | Target: {target_label}\n")
+
+                    if "interaction" in metrics and len(metrics["interaction"]) > 1:
+                        energies = [e for _, e in metrics["interaction"]]
+                        f.write(f"  Interaction energy range: {min(energies):.4f} to {max(energies):.4f} eV\n")
+                        f.write(f"  Mean interaction energy: {np.mean(energies):.4f} eV\n")
+                        f.write(f"  Std deviation: {np.std(energies):.4f} eV\n")
+
+                    if "adsorption" in metrics and len(metrics["adsorption"]) > 1:
+                        energies = [e for _, e in metrics["adsorption"]]
+                        f.write(f"  Adsorption energy range: {min(energies):.4f} to {max(energies):.4f} eV\n")
+                        f.write(f"  Mean adsorption energy: {np.mean(energies):.4f} eV\n")
+                        f.write(f"  Std deviation: {np.std(energies):.4f} eV\n")
                 
         print(f"Report saved: {report_path}")
         
@@ -419,11 +432,9 @@ class BatchComparison:
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump({
                 "config": self.config,
+                "targets": self.targets,
                 "results": self.results,
-                "rankings": {
-                    "interaction": self.rankings.get("interaction", []),
-                    "adsorption": self.rankings.get("adsorption", [])
-                }
+                "rankings": self.rankings
             }, f, indent=2)
             
         print(f"JSON results saved: {json_path}")
@@ -434,73 +445,73 @@ class BatchComparison:
         # Skip if no rankings
         if not self.rankings:
             return
-            
-        # Determine number of subplots needed
-        n_plots = len([r for r in self.rankings.values() if r])
-        if n_plots == 0:
+
+        def format_target_label(key: str) -> str:
+            if key in (None, "__no_target__", "null"):
+                return "None"
+            return key
+
+        combos = []
+        for substrate, target_rankings in self.rankings.items():
+            if not target_rankings:
+                continue
+            for target_key, metrics in target_rankings.items():
+                combos.append((substrate, target_key, metrics))
+
+        if not combos:
             return
-            
-        fig, axes = plt.subplots(1, n_plots, figsize=(8*n_plots, 6))
-        if n_plots == 1:
-            axes = [axes]
-            
-        plot_idx = 0
-        
-        # Plot interaction energies
-        if "interaction" in self.rankings and self.rankings["interaction"]:
-            ax = axes[plot_idx]
-            probes = [p for p, _ in self.rankings["interaction"]]
-            energies = [e for _, e in self.rankings["interaction"]]
-            
-            colors = ['green' if e < 0 else 'red' for e in energies]
-            bars = ax.bar(range(len(probes)), energies, color=colors)
-            
-            ax.set_xticks(range(len(probes)))
-            ax.set_xticklabels(probes, rotation=45, ha='right')
-            ax.set_ylabel('Interaction Energy (eV)')
-            ax.set_title(f'Probe-{self.target} Interaction Energies')
-            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-            ax.grid(True, alpha=0.3)
-            
-            # Add value labels on bars
-            for bar, energy in zip(bars, energies):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{energy:.3f}', ha='center', 
-                       va='bottom' if height >= 0 else 'top')
-                       
-            plot_idx += 1
-            
-        # Plot adsorption energies
-        if "adsorption" in self.rankings and self.rankings["adsorption"] and plot_idx < len(axes):
-            ax = axes[plot_idx]
-            probes = [p for p, _ in self.rankings["adsorption"]]
-            energies = [e for _, e in self.rankings["adsorption"]]
-            
-            colors = ['blue' if e < 0 else 'orange' for e in energies]
-            bars = ax.bar(range(len(probes)), energies, color=colors)
-            
-            ax.set_xticks(range(len(probes)))
-            ax.set_xticklabels(probes, rotation=45, ha='right')
-            ax.set_ylabel('Adsorption Energy (eV)')
-            substrate_name = self.substrates[0] if len(self.substrates) == 1 else "Substrate"
-            ax.set_title(f'Adsorption on {substrate_name}')
-            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-            ax.grid(True, alpha=0.3)
-            
-            # Add value labels on bars
-            for bar, energy in zip(bars, energies):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{energy:.3f}', ha='center',
-                       va='bottom' if height >= 0 else 'top')
-                       
-        plt.tight_layout()
-        plot_path = self.comparison_dir / "energy_comparison.png"
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        print(f"Plot saved: {plot_path}")
+
+        default_plot_saved = False
+
+        for substrate, target_key, metrics in combos:
+            plots_to_create = []
+            if "interaction" in metrics and metrics["interaction"]:
+                plots_to_create.append(("Interaction Energy (eV)", metrics["interaction"], 'green', 'red'))
+            if "adsorption" in metrics and metrics["adsorption"]:
+                plots_to_create.append(("Adsorption Energy (eV)", metrics["adsorption"], 'blue', 'orange'))
+
+            if not plots_to_create:
+                continue
+
+            fig, axes = plt.subplots(1, len(plots_to_create), figsize=(6*len(plots_to_create), 5))
+            if len(plots_to_create) == 1:
+                axes = [axes]
+
+            for ax, (title, data, neg_color, pos_color) in zip(axes, plots_to_create):
+                probes = [p for p, _ in data]
+                energies = [e for _, e in data]
+                colors = [neg_color if e < 0 else pos_color for e in energies]
+                bars = ax.bar(range(len(probes)), energies, color=colors)
+
+                ax.set_xticks(range(len(probes)))
+                ax.set_xticklabels(probes, rotation=45, ha='right')
+                ax.set_ylabel(title)
+                target_label = format_target_label(target_key)
+                ax.set_title(f"{title.split(' (')[0]}\n{substrate} | Target: {target_label}")
+                ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+                ax.grid(True, alpha=0.3)
+
+                for bar, energy in zip(bars, energies):
+                    height = bar.get_height()
+                    vertical_align = 'bottom' if height >= 0 else 'top'
+                    ax.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{energy:.3f}', ha='center', va=vertical_align)
+
+            plt.tight_layout()
+
+            safe_substrate = substrate.replace(' ', '_')
+            safe_target = format_target_label(target_key).replace(' ', '_').replace('/', '_')
+            plot_filename = f"energy_comparison_{safe_substrate}_{safe_target}.png"
+            plot_path = self.comparison_dir / plot_filename
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+
+            if not default_plot_saved:
+                default_path = self.comparison_dir / "energy_comparison.png"
+                plt.savefig(default_path, dpi=150, bbox_inches='tight')
+                default_plot_saved = True
+
+            plt.close(fig)
+            print(f"Plot saved: {plot_path}")
 
 
 def main():

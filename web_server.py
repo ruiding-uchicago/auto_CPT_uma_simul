@@ -212,16 +212,34 @@ def run_batch():
     data = request.json
     molecules = data.get('molecules', [])
     target = data.get('target')
+    targets = data.get('targets')
     substrate = data.get('substrate', 'vacuum')
-    
-    def generate(molecules, target, substrate):
+    model_name = data.get('model_name')
+    task_name = data.get('task_name')
+
+    if isinstance(targets, list):
+        targets = [t for t in targets if t]
+    else:
+        targets = None
+
+    def generate(molecules, target, targets, substrate):
         # Create batch config
         batch_config = {
             "probes": molecules,
             "substrate": substrate
         }
-        if target:
-            batch_config["target"] = target
+
+        target_list = targets if targets else ([target] if target else [])
+
+        if len(target_list) > 1:
+            batch_config["targets"] = target_list
+        elif len(target_list) == 1:
+            batch_config["target"] = target_list[0]
+        
+        if model_name:
+            batch_config["model_name"] = model_name
+        if task_name:
+            batch_config["task_name"] = task_name
         
         # Save config
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -292,51 +310,65 @@ def run_batch():
             # Generate visualization for each molecule
             # The results should exist and have been sent above
             if results and 'results' in results:
-                substrate = batch_config.get('substrate', 'vacuum')
-                target = batch_config.get('target', '')
-                
+                substrate_name = batch_config.get('substrate', 'vacuum')
+                target_values = []
+                if 'targets' in batch_config:
+                    target_values = batch_config['targets']
+                elif batch_config.get('target'):
+                    target_values = [batch_config['target']]
+                else:
+                    target_values = [None]
+
                 viz_links = []
+                processed_dirs = set()
                 yield f"data: 🔍 Looking for molecule directories...\n\n"
-                
+
                 for probe in molecules:
-                    # Try different possible directory names (handle typos like caffine vs caffeine)
-                    possible_dirs = []
-                    if target:
-                        # Try exact match first
-                        possible_dirs.append(Path('simulations') / f"{probe}_{target}_{substrate}")
-                        # Try with common variations
-                        for target_variant in [target, target.replace('caffine', 'caffeine'), target.replace('caffeine', 'caffine')]:
-                            possible_dirs.append(Path('simulations') / f"{probe}_{target_variant}_{substrate}")
-                    else:
-                        possible_dirs.append(Path('simulations') / f"{probe}_{substrate}")
-                    
-                    mol_dir = None
-                    for possible_dir in possible_dirs:
-                        if possible_dir.exists():
-                            mol_dir = possible_dir
-                            break
-                    
-                    if mol_dir:
-                        yield f"data: 📁 Found directory for {probe}: {mol_dir.name}\n\n"
-                        
-                        # Generate visualization for this molecule
-                        viz_cmd = [sys.executable, 'visualize_structures.py', str(mol_dir)]
-                        viz_result = subprocess.run(viz_cmd, capture_output=True, text=True, timeout=10)
-                        
-                        if viz_result.returncode == 0:
-                            viz_file = mol_dir / 'visualization.html'
-                            if viz_file.exists():
-                                viz_url = f"{mol_dir.name}/visualization.html"
-                                viz_links.append({"molecule": probe, "url": viz_url})
-                                yield f"data: ✅ Generated 3D visualization for {probe}\n\n"
-                            else:
-                                yield f"data: ⚠️ Visualization file not created for {probe}\n\n"
+                    for target_value in target_values:
+                        # Try different possible directory names (handle typos like caffine vs caffeine)
+                        possible_dirs = []
+                        if target_value:
+                            possible_dirs.append(Path('simulations') / f"{probe}_{target_value}_{substrate_name}")
+                            for target_variant in [
+                                target_value,
+                                target_value.replace('caffine', 'caffeine'),
+                                target_value.replace('caffeine', 'caffine')
+                            ]:
+                                possible_dirs.append(Path('simulations') / f"{probe}_{target_variant}_{substrate_name}")
                         else:
-                            yield f"data: ❌ Failed to generate visualization for {probe}: {viz_result.stderr}\n\n"
-                    else:
-                        yield f"data: ⚠️ Directory not found for {probe}\n\n"
-                
-                # Send all visualization links
+                            possible_dirs.append(Path('simulations') / f"{probe}_{substrate_name}")
+
+                        mol_dir = None
+                        for possible_dir in possible_dirs:
+                            if possible_dir.exists():
+                                mol_dir = possible_dir
+                                break
+
+                        if mol_dir and mol_dir not in processed_dirs:
+                            processed_dirs.add(mol_dir)
+                            yield f"data: 📁 Found directory for {probe}: {mol_dir.name}\n\n"
+
+                            viz_cmd = [sys.executable, 'visualize_structures.py', str(mol_dir)]
+                            viz_result = subprocess.run(viz_cmd, capture_output=True, text=True, timeout=10)
+
+                            if viz_result.returncode == 0:
+                                viz_file = mol_dir / 'visualization.html'
+                                if viz_file.exists():
+                                    viz_url = f"{mol_dir.name}/visualization.html"
+                                    viz_links.append({
+                                        "molecule": probe,
+                                        "target": target_value or "",
+                                        "url": viz_url
+                                    })
+                                    yield f"data: ✅ Generated 3D visualization for {probe} ({'target: ' + target_value if target_value else 'no target'})\n\n"
+                                else:
+                                    yield f"data: ⚠️ Visualization file not created for {probe}\n\n"
+                            else:
+                                yield f"data: ❌ Failed to generate visualization for {probe}: {viz_result.stderr}\n\n"
+                        elif not mol_dir:
+                            label = target_value if target_value else 'no target'
+                            yield f"data: ⚠️ Directory not found for {probe} (target: {label})\n\n"
+
                 if viz_links:
                     yield f"data: VIZ_LINKS:{json.dumps(viz_links)}\n\n"
             
@@ -348,7 +380,7 @@ def run_batch():
             if os.path.exists(config_path):
                 os.unlink(config_path)
     
-    return Response(generate(molecules, target, substrate), mimetype='text/event-stream')
+    return Response(generate(molecules, target, targets, substrate), mimetype='text/event-stream')
 
 @app.route('/examples')
 def get_examples():

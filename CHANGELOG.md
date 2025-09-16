@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.0] - 2025-09-09
 
+## [1.3.0] - 2026-??-??
+
+### Added
+- Multitarget batch screening support across CLI and web UI
+- Target selector and energy definitions displayed throughout GUI tabs
+- Energy definition summaries in README and USER_MANUAL for quick reference
+
+### Changed
+- Batch comparison output JSON, reports, and plots now organized by substrate/target pairing
+- Visualization streaming supports multiple target directories and tagged links
+
+### Fixed
+- Ensured quick test and single-run tabs expose consistent energy interpretation guidance
+
 ### Added
 - 🌐 **Web GUI Interface** - Complete browser-based interface for RAPIDS
   - `web_gui.html` - Single-file HTML interface with all functionality

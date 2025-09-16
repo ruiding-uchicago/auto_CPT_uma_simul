@@ -169,6 +169,13 @@ Generated in `simulations/[run_name]/` directory:
 - `interactions.json`: Calculated interaction energies
 - `smart_report.txt`: Complete calculation report
 
+#### Energy Definitions (all in eV)
+- **Adsorption energy** = E(probe + substrate) − E(probe) − E(substrate)
+- **Interaction energy (vacuum)** = E(probe + target in vacuum) − E(probe) − E(target)
+- **Total three-component binding** = E(probe + target + substrate) − E(probe) − E(target) − E(substrate)
+
+Negative values indicate the combined system is more stable than the separated molecules (favourable binding); positive values mean the configuration is unfavourable and likely to dissociate.
+
 ## Results Interpretation
 
 ### Adsorption Energy
