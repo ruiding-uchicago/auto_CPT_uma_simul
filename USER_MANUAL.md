@@ -1,6 +1,6 @@
 # FAIRChem Auto-UMA Simulation Toolkit - User Manual
 
-**Version 1.2.0** - Now with Web GUI Interface!
+**Version 1.4.0** - Relative Positioning & Contact Distance Mode!
 
 ## Overview
 
@@ -108,6 +108,8 @@ See `example_configs/README.md` for detailed descriptions.
 - `probe_height`: Probe molecule height from substrate, default 2.5 Å (used with auto positioning)
 - `target_height`: Target molecule height, default probe_height + 3.5 Å (used with auto positioning)
 - `probe_target_distance`: Probe-target spacing, default 4.0 Å
+  - Numeric value (e.g., `4.0`): Fixed distance in Å
+  - `"contact"`: Automatically calculate van der Waals contact distance
 - `fmax`: Optimization convergence criterion, default 0.05 eV/Å
 - `max_steps`: Maximum optimization steps per run, default 100
 - `max_continuations`: Maximum continuation attempts, default 3
@@ -124,7 +126,13 @@ See `example_configs/README.md` for detailed descriptions.
   - `[rx, ry, rz]`: Euler angles in degrees
   - `{"axis": [x, y, z], "angle": degrees}`: Axis-angle rotation
   - `{"align": "flat"/"standing"/"tilted"}`: Preset orientations
-- `target_position`: Custom target placement (same formats as probe_position)
+- `target_position`: Custom target placement (same formats as probe_position, plus relative mode)
+  - All formats from probe_position, plus:
+  - `{"relative_to": "probe", "lateral_offset": 4.0, "vertical_offset": 1.0, "direction": "x"}`: Position relative to probe
+    - `relative_to`: Reference molecule ("probe")
+    - `lateral_offset`: Horizontal distance in Å (default: 0)
+    - `vertical_offset`: Vertical distance in Å (default: 0)
+    - `direction`: Offset direction - "x", "-x", "y", "-y", "radial", "random" (default: "x")
 - `target_orientation`: Custom target orientation (same formats as probe_orientation)
 
 ### Complete Configuration Example
@@ -480,6 +488,87 @@ python simulation_builder.py config.json
   "probe_position": [15.0, 15.0, 12.0],
   "probe_orientation": {"axis": [1, 0, 0], "angle": 90}
 }
+```
+
+### Relative Positioning (NEW in v1.4.0)
+Position target molecule relative to probe:
+```json
+{
+  "probe": "benzene",
+  "target": "water",
+  "substrate": "Graphene",
+  "target_position": {
+    "relative_to": "probe",
+    "lateral_offset": 4.0,
+    "vertical_offset": 1.0,
+    "direction": "x"
+  }
+}
+```
+This places water 4Å in +x direction and 1Å above benzene.
+
+Available directions:
+- `"x"`, `"-x"`: Along/against x-axis
+- `"y"`, `"-y"`: Along/against y-axis
+- `"radial"`: Random angle from probe center
+- `"random"`: Same as radial
+
+### Contact Distance Mode (NEW in v1.4.0)
+Automatically place molecules at van der Waals contact distance:
+```json
+{
+  "probe": "benzene",
+  "target": "water",
+  "substrate": "vacuum",
+  "probe_target_distance": "contact"
+}
+```
+The system calculates the optimal approach distance based on atomic radii (Mantina 2009).
+
+### Automatic Solvation (NEW in v1.4.0)
+Add explicit solvent molecules around the probe/target cluster:
+
+**Auto mode** (system calculates water count based on cluster size):
+```json
+{
+  "probe": "aspirin",
+  "target": "caffeine",
+  "substrate": "vacuum",
+  "solvation": {
+    "solvent": "water",
+    "mode": "auto",
+    "shell_thickness": 3.0,
+    "density": 1.0
+  }
+}
+```
+
+**Manual mode** (specify exact count):
+```json
+{
+  "probe": "glucose",
+  "substrate": "vacuum",
+  "solvation": {
+    "solvent": "water",
+    "count": 20
+  }
+}
+```
+
+Solvation parameters:
+- `solvent`: Solvent molecule name (default: "water")
+- `mode`: "auto" for automatic count calculation
+- `count`: Manual solvent count (overrides auto)
+- `shell_thickness`: Solvation shell thickness in Å (default: 3.0)
+- `density`: Density factor, 1.0 = normal density (default: 1.0)
+
+Output:
+```
+Solvation Analysis:
+  Cluster size: 11.4 x 9.9 x 6.5 Å
+  Cluster radius: 4.6 Å
+  Estimated solvent count: 62 (auto, shell=3.0 Å)
+  Successfully placed: 62 water molecules
 ```
 
 ## Rare Molecules Collection
