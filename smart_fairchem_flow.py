@@ -578,13 +578,15 @@ class SmartFAIRChemFlow:
             return None
 
         try:
-            # Gas phase calculation
+            # Gas phase calculation (xTB requires pbc=False)
             atoms_gas = atoms.copy()
+            atoms_gas.pbc = False  # xTB doesn't support periodic systems
             atoms_gas.calc = XTB(method="GFN2-xTB")
             e_gas = atoms_gas.get_potential_energy()
 
             # Solvated calculation (ALPB implicit water)
             atoms_solv = atoms.copy()
+            atoms_solv.pbc = False  # xTB doesn't support periodic systems
             atoms_solv.calc = XTB(method="GFN2-xTB", solvent="water")
             e_solv = atoms_solv.get_potential_energy()
 
