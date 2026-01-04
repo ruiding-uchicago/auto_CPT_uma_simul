@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-RAPIDS MCP Server (v1.5.0)
+RAPIDS MCP Server (v1.7.0)
 ==========================
 Model Context Protocol server for RAPIDS molecular simulation toolkit.
 
 Exposes comprehensive tools for:
+- Setting workspace directory for project isolation
 - Listing available substrates, molecules, and rare molecules
 - Building molecular simulation structures with full positioning control
 - Running geometry optimization
@@ -23,6 +24,10 @@ Or configure in Claude Desktop config.json:
         }
     }
 }
+
+IMPORTANT: Agents must call set_workspace() before running simulations.
+This ensures project isolation - each agent's results are saved to their
+own project directory, not the MCP server's directory.
 """
 
 import asyncio
@@ -73,11 +78,46 @@ def get_batch_comparison():
         _batch_comparison = BatchComparison
     return _batch_comparison
 
-# Constants
-SUBSTRATE_DIR = Path(__file__).parent / "substrate"
-MOLECULES_DIR = Path(__file__).parent / "molecules"
-RARE_MOLECULES_DIR = Path(__file__).parent / "rare_molecules"
-SIMULATIONS_DIR = Path(__file__).parent / "simulations"
+# Constants - MCP server's own directories (read-only resources)
+MCP_SERVER_DIR = Path(__file__).parent
+SUBSTRATE_DIR = MCP_SERVER_DIR / "substrate"
+RARE_MOLECULES_DIR = MCP_SERVER_DIR / "rare_molecules"
+
+# Workspace state - set by agent via set_workspace tool
+_current_workspace: Optional[Path] = None
+
+
+def get_workspace() -> Optional[Path]:
+    """Get current workspace directory"""
+    return _current_workspace
+
+
+def get_simulations_dir() -> Optional[Path]:
+    """Get simulations directory in current workspace"""
+    if _current_workspace is None:
+        return None
+    return _current_workspace / "simulations"
+
+
+def get_molecules_dir() -> Optional[Path]:
+    """Get molecules directory in current workspace"""
+    if _current_workspace is None:
+        return None
+    return _current_workspace / "molecules"
+
+
+def require_workspace() -> tuple[bool, str]:
+    """Check if workspace is set, return (ok, error_message)"""
+    if _current_workspace is None:
+        return False, (
+            "Error: No workspace set.\n\n"
+            "You must call set_workspace(path) first to specify where simulation "
+            "files should be saved.\n\n"
+            "Example: set_workspace('/path/to/your/project')\n\n"
+            "This ensures your results are saved to your project directory, "
+            "not the MCP server's directory."
+        )
+    return True, ""
 
 # Available substrates (pre-built crystal structures)
 AVAILABLE_SUBSTRATES = [
@@ -94,16 +134,37 @@ AVAILABLE_SUBSTRATES = [
 # Create server instance
 server = Server(
     name="rapids",
-    version="1.6.0",
+    version="1.7.0",
     instructions="""RAPIDS (Rapid Adsorption Probe Interaction Discovery System) is a molecular simulation toolkit.
 
-Use this server to:
-1. Build molecular structures: probe molecules on substrates (Graphene, MoS2, etc.) or probe-target interactions
-2. Run geometry optimization using FAIRChem UMA machine learning potential
-3. Calculate adsorption/interaction energies between molecules
-4. Screen multiple molecules for adsorption affinity (batch screening)
+=== IMPORTANT: WORKSPACE SETUP ===
 
-Key features:
+Before running ANY simulation, you MUST call set_workspace() with the user's project directory:
+
+    set_workspace("/path/to/user/project")
+
+This ensures:
+- Your simulation results are saved to YOUR project directory
+- The MCP server's directory remains clean (it only contains shared resources)
+- Different projects don't pollute each other
+
+The MCP server directory contains READ-ONLY shared resources:
+- substrate/: Pre-built crystal structures (Graphene, MoS2, etc.)
+- rare_molecules/: Complex molecules not available on PubChem
+
+Your workspace will contain:
+- simulations/: Your simulation results
+- molecules/: Downloaded molecules for your project
+
+=== TYPICAL WORKFLOW ===
+
+1. set_workspace("/path/to/project")  ← MUST do this first!
+2. build_simulation(probe="benzene", substrate="Graphene", ...)
+3. optimize_structure(run_name="...")
+4. calculate_adsorption_energy(run_name="...")
+
+=== FEATURES ===
+
 - Automatic molecule download from PubChem (just use the molecule name)
 - 9 pre-built substrates: Graphene, MoS2, BP, Si, ZnO, Co/Cu/Ni_HHTP MOFs
 - Support for solvation (explicit water molecules)
@@ -158,11 +219,34 @@ For QUALITATIVE substrate screening:
 → Trust relative rankings, not absolute values
 → Validate important results with DFT
 
+=== WHEN TO USE scan_orientations ===
+
+Initial molecular geometry can significantly affect results. Use scan_orientations when:
+
+1. POSITIVE binding energy (> 0 eV): Likely bad initial geometry
+   - Example: +6 eV → after scan → -0.3 eV (true binding)
+
+2. VERY WEAK binding (-0.1 to 0 eV, or -2.3 kcal/mol): May be local minimum
+   - Scan can find better configuration with stronger binding
+
+3. UNEXPECTEDLY large values: If result seems chemically unreasonable
+   - Trust your chemical intuition - if it looks wrong, scan it
+
+4. IONIC compounds in vacuum: May have separation artifacts
+   - Example: SDS (Na+ + sulfate anion) gives non-physical results in vacuum
+   - Consider: use neutral analogs or solvated simulations instead
+
+5. KEY candidates: For important molecules in your screening
+   - Worth the extra computation to confirm the result
+
+Rule of thumb: Quick screening first → scan suspicious results → confirm top candidates
+
 PARALLEL EXECUTION SUPPORTED:
 - Multiple optimize_structure calls can run in parallel
 - For screening many molecules, you can call optimize_structure in parallel for efficiency
 
 Typical workflow: build_simulation → optimize_structure → calculate_adsorption_energy
+Optional: → scan_orientations (if result is suspicious)
 """,
 )
 
@@ -175,6 +259,33 @@ Typical workflow: build_simulation → optimize_structure → calculate_adsorpti
 async def list_tools() -> list[Tool]:
     """List all available tools"""
     return [
+        # ==================== Workspace Tools ====================
+        Tool(
+            name="set_workspace",
+            description="Set the working directory for this session. MUST be called before running any simulations. "
+                       "All simulation results and downloaded molecules will be saved to this directory. "
+                       "This ensures project isolation - different agents/projects don't pollute each other.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to your project directory (e.g., '/Users/name/my_project')"
+                    }
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
+            name="get_workspace",
+            description="Get the current workspace directory. Returns None if not set.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+
         # ==================== Listing Tools ====================
         Tool(
             name="list_substrates",
@@ -521,7 +632,13 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Handle tool calls"""
 
-    if name == "list_substrates":
+    if name == "set_workspace":
+        return await handle_set_workspace(arguments)
+
+    elif name == "get_workspace":
+        return await handle_get_workspace()
+
+    elif name == "list_substrates":
         return await handle_list_substrates()
 
     elif name == "list_local_molecules":
@@ -561,6 +678,57 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
+# ==================== Workspace Handlers ====================
+
+async def handle_set_workspace(args: dict) -> list[TextContent]:
+    """Set the workspace directory for this session"""
+    global _current_workspace
+
+    path = args.get("path", "").strip()
+    if not path:
+        return [TextContent(type="text", text="Error: path is required")]
+
+    workspace_path = Path(path).resolve()
+
+    # Create workspace directory if it doesn't exist
+    try:
+        workspace_path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error creating workspace directory: {e}")]
+
+    # Create subdirectories
+    simulations_dir = workspace_path / "simulations"
+    molecules_dir = workspace_path / "molecules"
+
+    try:
+        simulations_dir.mkdir(exist_ok=True)
+        molecules_dir.mkdir(exist_ok=True)
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error creating subdirectories: {e}")]
+
+    _current_workspace = workspace_path
+
+    result = f"Workspace set successfully!\n\n"
+    result += f"Workspace: {workspace_path}\n"
+    result += f"  └── simulations/  (simulation results will be saved here)\n"
+    result += f"  └── molecules/    (downloaded molecules will be saved here)\n\n"
+    result += "You can now run simulations. All results will be saved to this workspace."
+
+    return [TextContent(type="text", text=result)]
+
+
+async def handle_get_workspace() -> list[TextContent]:
+    """Get the current workspace directory"""
+    if _current_workspace is None:
+        return [TextContent(type="text", text="No workspace set. Call set_workspace(path) first.")]
+
+    result = f"Current workspace: {_current_workspace}\n"
+    result += f"  └── simulations/: {get_simulations_dir()}\n"
+    result += f"  └── molecules/:   {get_molecules_dir()}"
+
+    return [TextContent(type="text", text=result)]
+
+
 # ==================== Listing Handlers ====================
 
 async def handle_list_substrates() -> list[TextContent]:
@@ -594,15 +762,46 @@ async def handle_list_substrates() -> list[TextContent]:
 
 
 async def handle_list_local_molecules() -> list[TextContent]:
-    """List locally available molecules"""
-    molecules = []
-    for f in MOLECULES_DIR.glob("*.sdf"):
-        if f.stem and not f.name.startswith('.'):
-            molecules.append(f.stem)
+    """List locally available molecules in current workspace and shared directories"""
+    molecules_dir = get_molecules_dir()
 
-    molecules.sort()
-    result = f"Local Molecules ({len(molecules)} available):\n"
-    result += ", ".join(molecules)
+    # Collect molecules from all sources
+    workspace_molecules = set()
+    shared_molecules = set()
+
+    # 1. Workspace molecules
+    if molecules_dir and molecules_dir.exists():
+        for f in molecules_dir.glob("*.sdf"):
+            if f.stem and not f.name.startswith('.'):
+                workspace_molecules.add(f.stem)
+
+    # 2. Global shared molecules (MCP_SERVER_DIR/molecules)
+    global_molecules_dir = MCP_SERVER_DIR / "molecules"
+    if global_molecules_dir.exists():
+        for f in global_molecules_dir.glob("*.sdf"):
+            if f.stem and not f.name.startswith('.'):
+                shared_molecules.add(f.stem)
+
+    # 3. Rare molecules (MCP_SERVER_DIR/rare_molecules)
+    if RARE_MOLECULES_DIR.exists():
+        for f in RARE_MOLECULES_DIR.glob("*.sdf"):
+            if f.stem and not f.name.startswith('.'):
+                shared_molecules.add(f.stem)
+
+    # Combine and sort
+    all_molecules = sorted(workspace_molecules | shared_molecules)
+
+    result = f"Workspace: {_current_workspace or '(not set)'}\n\n"
+    result += f"Local Molecules ({len(all_molecules)} available):\n"
+    if all_molecules:
+        result += ", ".join(all_molecules)
+    else:
+        result += "(none yet - molecules will be downloaded when you run simulations)"
+
+    # Show breakdown if both sources have molecules
+    if workspace_molecules and shared_molecules:
+        result += f"\n\n  Workspace: {len(workspace_molecules)} | Shared: {len(shared_molecules)}"
+
     result += "\n\nNote: Any molecule name can be used - if not found locally, it will be auto-downloaded from PubChem."
     result += "\nExamples of downloadable molecules: ibuprofen, aspirin, caffeine, nicotine, morphine, penicillin, etc."
     return [TextContent(type="text", text=result)]
@@ -634,12 +833,17 @@ async def handle_list_rare_molecules() -> list[TextContent]:
 
 
 async def handle_list_simulations() -> list[TextContent]:
-    """List all simulation runs"""
-    if not SIMULATIONS_DIR.exists():
-        return [TextContent(type="text", text="No simulations directory found.")]
+    """List all simulation runs in current workspace"""
+    simulations_dir = get_simulations_dir()
+
+    if simulations_dir is None:
+        return [TextContent(type="text", text="No workspace set. Call set_workspace(path) first.")]
+
+    if not simulations_dir.exists():
+        return [TextContent(type="text", text=f"Workspace: {_current_workspace}\n\nNo simulations found yet.")]
 
     simulations = []
-    for sim_dir in sorted(SIMULATIONS_DIR.iterdir()):
+    for sim_dir in sorted(simulations_dir.iterdir()):
         if sim_dir.is_dir() and not sim_dir.name.startswith('.'):
             status = "built"
             if (sim_dir / "results.json").exists():
@@ -668,9 +872,10 @@ async def handle_list_simulations() -> list[TextContent]:
             simulations.append(info)
 
     if not simulations:
-        return [TextContent(type="text", text="No simulations found.")]
+        return [TextContent(type="text", text=f"Workspace: {_current_workspace}\n\nNo simulations found yet.")]
 
-    result = f"Simulations ({len(simulations)} total):\n" + "\n".join(simulations)
+    result = f"Workspace: {_current_workspace}\n\n"
+    result += f"Simulations ({len(simulations)} total):\n" + "\n".join(simulations)
     return [TextContent(type="text", text=result)]
 
 
@@ -679,6 +884,13 @@ async def handle_list_simulations() -> list[TextContent]:
 async def handle_build_simulation(args: dict) -> list[TextContent]:
     """Build simulation structures with full configuration options"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
+
         # Prepare config with all possible parameters
         config = {
             "run_name": args["run_name"],
@@ -721,8 +933,8 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
         if "solvation" in args:
             config["solvation"] = args["solvation"]
 
-        # Save config to temp file
-        config_path = SIMULATIONS_DIR / f"{args['run_name']}_config.json"
+        # Save config to temp file in workspace
+        config_path = simulations_dir / f"{args['run_name']}_config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(config_path, 'w') as f:
@@ -733,7 +945,8 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
         sys.stdout = sys.stderr
         try:
             SimulationBuilder = get_simulation_builder()
-            builder = SimulationBuilder(str(config_path))
+            # Pass workspace to builder so it knows where to save molecules
+            builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
             structures = builder.build_simulation()
             builder.save_structures(structures)
         finally:
@@ -743,7 +956,7 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
         config_path.unlink(missing_ok=True)
 
         # Prepare result
-        output_dir = SIMULATIONS_DIR / args["run_name"]
+        output_dir = simulations_dir / args["run_name"]
         result = f"Simulation built successfully!\n\n"
         result += f"Output directory: {output_dir}\n\n"
         result += "Configuration:\n"
@@ -773,12 +986,19 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
 async def handle_optimize_structure(args: dict) -> list[TextContent]:
     """Run geometry optimization"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
+
         run_name = args["run_name"]
         fmax = args.get("fmax", 0.05)
         max_steps = args.get("max_steps", 200)
         task_name = args.get("task_name", "omol")
 
-        sim_dir = SIMULATIONS_DIR / run_name
+        sim_dir = simulations_dir / run_name
         config_path = sim_dir / "config.json"
 
         if not config_path.exists():
@@ -797,7 +1017,7 @@ async def handle_optimize_structure(args: dict) -> list[TextContent]:
             json.dump(config, f, indent=2)
 
         SmartFlow = get_smart_flow()
-        flow = SmartFlow(str(temp_config_path))
+        flow = SmartFlow(str(temp_config_path), workspace=str(_current_workspace))
 
         result_text = f"Starting optimization for '{run_name}'...\n"
         result_text += f"Parameters: fmax={fmax} eV/Å, max_steps={max_steps}, task={task_name}\n\n"
@@ -832,6 +1052,23 @@ async def handle_optimize_structure(args: dict) -> list[TextContent]:
                     result_text += f"    → Favorable (exothermic)\n"
                 else:
                     result_text += f"    → Unfavorable (endothermic)\n"
+
+        # Read solvation results if available (vacuum mode only)
+        solvation_path = sim_dir / "solvation.json"
+        if solvation_path.exists():
+            with open(solvation_path) as f:
+                solvation = json.load(f)
+            result_text += "\nSolvation Analysis (xTB GFN2-xTB + ALPB water):\n"
+            for name in ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]:
+                if name in solvation:
+                    G_solv = solvation[name]
+                    result_text += f"  G_solv({name}): {G_solv:.4f} eV ({G_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solvation" in solvation:
+                dG_solv = solvation["delta_G_solvation"]
+                result_text += f"\n  ΔG_solvation: {dG_solv:.4f} eV ({dG_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solution" in solvation:
+                dG_sol = solvation["delta_G_solution"]
+                result_text += f"  Solution binding: {dG_sol:.4f} eV ({dG_sol * 23.061:.2f} kcal/mol)\n"
 
         # Also show the report if available
         report_path = sim_dir / "smart_report.txt"
@@ -894,8 +1131,14 @@ async def handle_calculate_energy(args: dict) -> list[TextContent]:
 async def handle_calculate_adsorption_energy(args: dict) -> list[TextContent]:
     """Calculate adsorption/interaction energies from optimized structures"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
         run_name = args["run_name"]
-        sim_dir = SIMULATIONS_DIR / run_name
+        sim_dir = simulations_dir / run_name
 
         if not sim_dir.exists():
             return [TextContent(type="text", text=f"Simulation '{run_name}' not found.")]
@@ -929,6 +1172,23 @@ async def handle_calculate_adsorption_energy(args: dict) -> list[TextContent]:
         else:
             return [TextContent(type="text", text=f"No results found for '{run_name}'. Run optimize_structure first.")]
 
+        # Add solvation data if available
+        solvation_path = sim_dir / "solvation.json"
+        if solvation_path.exists():
+            with open(solvation_path) as f:
+                solvation = json.load(f)
+            result += "\nSolvation Analysis (xTB GFN2-xTB + ALPB water):\n"
+            for name in ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]:
+                if name in solvation:
+                    G_solv = solvation[name]
+                    result += f"  G_solv({name}): {G_solv:.4f} eV ({G_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solvation" in solvation:
+                dG_solv = solvation["delta_G_solvation"]
+                result += f"\n  ΔG_solvation: {dG_solv:.4f} eV ({dG_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solution" in solvation:
+                dG_sol = solvation["delta_G_solution"]
+                result += f"  Solution binding: {dG_sol:.4f} eV ({dG_sol * 23.061:.2f} kcal/mol)\n"
+
         return [TextContent(type="text", text=result)]
 
     except Exception as e:
@@ -940,6 +1200,13 @@ async def handle_calculate_adsorption_energy(args: dict) -> list[TextContent]:
 async def handle_batch_screening(args: dict) -> list[TextContent]:
     """Run batch screening of multiple probes"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
+
         run_name = args["run_name"]
         probes = args["probes"]
         target = args.get("target")
@@ -949,6 +1216,7 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
         task_name = args.get("task_name", "omol")
 
         result_text = f"Batch Screening: {run_name}\n"
+        result_text += f"Workspace: {_current_workspace}\n"
         result_text += f"Probes: {', '.join(probes)}\n"
         if target:
             result_text += f"Target: {target}\n"
@@ -973,7 +1241,7 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
                 config["target"] = target
 
             # Build
-            config_path = SIMULATIONS_DIR / f"{sub_run_name}_config.json"
+            config_path = simulations_dir / f"{sub_run_name}_config.json"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
@@ -983,7 +1251,7 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
             sys.stdout = sys.stderr
             try:
                 SimulationBuilder = get_simulation_builder()
-                builder = SimulationBuilder(str(config_path))
+                builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
                 structures = builder.build_simulation()
                 builder.save_structures(structures)
                 config_path.unlink(missing_ok=True)
@@ -991,23 +1259,28 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
                 if optimize:
                     config["fmax"] = fmax
                     # Save config to temp file (SmartFlow expects file path)
-                    opt_config_path = SIMULATIONS_DIR / f"{sub_run_name}" / "config_opt.json"
+                    opt_config_path = simulations_dir / f"{sub_run_name}" / "config_opt.json"
                     with open(opt_config_path, 'w') as f:
                         json.dump(config, f, indent=2)
                     SmartFlow = get_smart_flow()
-                    flow = SmartFlow(str(opt_config_path))
+                    flow = SmartFlow(str(opt_config_path), workspace=str(_current_workspace))
                     await asyncio.to_thread(flow.run_workflow)
                     # Clean up
                     del flow
                     import gc
                     gc.collect()
                     # Read results from saved file
-                    interactions_path = SIMULATIONS_DIR / sub_run_name / "interactions.json"
+                    interactions_path = simulations_dir / sub_run_name / "interactions.json"
                     if interactions_path.exists():
                         with open(interactions_path) as f:
                             all_results[probe] = json.load(f)
                     else:
                         all_results[probe] = {"status": "optimized but no interactions found"}
+                    # Also read solvation data if available
+                    solvation_path = simulations_dir / sub_run_name / "solvation.json"
+                    if solvation_path.exists():
+                        with open(solvation_path) as f:
+                            all_results[probe]["solvation"] = json.load(f)
                 else:
                     all_results[probe] = {"status": "built (not optimized)"}
 
@@ -1047,7 +1320,13 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
                 result_text += f"{rank}. {probe}: Built successfully\n"
             else:
                 kcal = energy * 23.061
-                result_text += f"{rank}. {probe}: {energy:.4f} eV ({kcal:.2f} kcal/mol)\n"
+                line = f"{rank}. {probe}: {energy:.4f} eV ({kcal:.2f} kcal/mol)"
+                # Add solution binding if available
+                if "solvation" in all_results[probe] and "delta_G_solution" in all_results[probe]["solvation"]:
+                    sol_energy = all_results[probe]["solvation"]["delta_G_solution"]
+                    sol_kcal = sol_energy * 23.061
+                    line += f" | Solution: {sol_energy:.4f} eV ({sol_kcal:.2f} kcal/mol)"
+                result_text += line + "\n"
 
         return [TextContent(type="text", text=result_text)]
 
@@ -1061,6 +1340,13 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
 async def handle_scan_orientations(args: dict) -> list[TextContent]:
     """Scan multiple orientations to find the most stable configuration"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
+
         import numpy as np
 
         run_name = args["run_name"]
@@ -1074,6 +1360,7 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
         fmax = args.get("fmax", 0.05)
 
         result_text = f"Orientation Scan: {run_name}\n"
+        result_text += f"Workspace: {_current_workspace}\n"
         result_text += f"Probe: {probe}, Target: {target}\n"
         result_text += f"Rotating: {rotate_molecule} around {rotation_axis}-axis\n"
         result_text += f"Sampling {num_orientations} orientations\n"
@@ -1129,25 +1416,25 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
                     config["target_orientation"] = {"euler": euler}
 
                 # Build simulation
-                config_path = SIMULATIONS_DIR / f"{sub_run_name}_config.json"
+                config_path = simulations_dir / f"{sub_run_name}_config.json"
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(config_path, 'w') as f:
                     json.dump(config, f, indent=2)
 
                 try:
                     SimulationBuilder = get_simulation_builder()
-                    builder = SimulationBuilder(str(config_path))
+                    builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
                     structures = builder.build_simulation()
                     builder.save_structures(structures)
                     config_path.unlink(missing_ok=True)
 
                     # Optimize
-                    opt_config_path = SIMULATIONS_DIR / sub_run_name / "config_opt.json"
+                    opt_config_path = simulations_dir / sub_run_name / "config_opt.json"
                     with open(opt_config_path, 'w') as f:
                         json.dump(config, f, indent=2)
 
                     SmartFlow = get_smart_flow()
-                    flow = SmartFlow(str(opt_config_path))
+                    flow = SmartFlow(str(opt_config_path), workspace=str(_current_workspace))
                     await asyncio.to_thread(flow.run_workflow)
 
                     # Clean up
@@ -1156,7 +1443,7 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
                     gc.collect()
 
                     # Read interaction energy
-                    interactions_path = SIMULATIONS_DIR / sub_run_name / "interactions.json"
+                    interactions_path = simulations_dir / sub_run_name / "interactions.json"
                     if interactions_path.exists():
                         with open(interactions_path) as f:
                             interactions = json.load(f)
@@ -1164,13 +1451,22 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
                         energy = interactions.get("probe_target_vacuum", interactions.get("probe_target", None))
                         if energy is not None:
                             kcal = energy * 23.061
-                            all_results.append({
+                            result_entry = {
                                 "run_name": sub_run_name,
                                 "axis": axis,
                                 "angle": angle,
                                 "energy_eV": energy,
                                 "energy_kcal": kcal
-                            })
+                            }
+                            # Read solvation data if available
+                            solvation_path = simulations_dir / sub_run_name / "solvation.json"
+                            if solvation_path.exists():
+                                with open(solvation_path) as f:
+                                    solvation = json.load(f)
+                                if "delta_G_solution" in solvation:
+                                    result_entry["solution_eV"] = solvation["delta_G_solution"]
+                                    result_entry["solution_kcal"] = solvation["delta_G_solution"] * 23.061
+                            all_results.append(result_entry)
                             result_text += f"{energy:.4f} eV ({kcal:.2f} kcal/mol)\n"
                         else:
                             result_text += "No interaction energy found\n"
@@ -1195,7 +1491,11 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
             result_text += "Ranked by interaction energy (most favorable first):\n\n"
             for rank, r in enumerate(sorted_results, 1):
                 marker = " ← BEST" if rank == 1 else ""
-                result_text += f"{rank}. {r['axis']}-axis {r['angle']:.1f}°: {r['energy_eV']:.4f} eV ({r['energy_kcal']:.2f} kcal/mol){marker}\n"
+                line = f"{rank}. {r['axis']}-axis {r['angle']:.1f}°: {r['energy_eV']:.4f} eV ({r['energy_kcal']:.2f} kcal/mol)"
+                if "solution_eV" in r:
+                    line += f" | Sol: {r['solution_eV']:.4f} eV"
+                line += marker
+                result_text += line + "\n"
 
             best = sorted_results[0]
             worst = sorted_results[-1]
@@ -1219,13 +1519,20 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
 async def handle_get_simulation_results(args: dict) -> list[TextContent]:
     """Get simulation results"""
     try:
+        # Check workspace
+        ok, error_msg = require_workspace()
+        if not ok:
+            return [TextContent(type="text", text=error_msg)]
+
+        simulations_dir = get_simulations_dir()
         run_name = args["run_name"]
-        sim_dir = SIMULATIONS_DIR / run_name
+        sim_dir = simulations_dir / run_name
 
         if not sim_dir.exists():
             return [TextContent(type="text", text=f"Simulation '{run_name}' not found.")]
 
-        result = f"Simulation: {run_name}\n"
+        result = f"Workspace: {_current_workspace}\n"
+        result += f"Simulation: {run_name}\n"
         result += f"Directory: {sim_dir}\n\n"
 
         # Read config
@@ -1262,6 +1569,23 @@ async def handle_get_simulation_results(args: dict) -> list[TextContent]:
                 for name, energy in results["binding_energies"].items():
                     kcal = energy * 23.061
                     result += f"  {name}: {energy:.4f} eV ({kcal:.2f} kcal/mol)\n"
+
+        # Read solvation data if available
+        solvation_path = sim_dir / "solvation.json"
+        if solvation_path.exists():
+            with open(solvation_path) as f:
+                solvation = json.load(f)
+            result += "\nSolvation Analysis (xTB GFN2-xTB + ALPB water):\n"
+            for name in ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]:
+                if name in solvation:
+                    G_solv = solvation[name]
+                    result += f"  G_solv({name}): {G_solv:.4f} eV ({G_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solvation" in solvation:
+                dG_solv = solvation["delta_G_solvation"]
+                result += f"\n  ΔG_solvation: {dG_solv:.4f} eV ({dG_solv * 23.061:.2f} kcal/mol)\n"
+            if "delta_G_solution" in solvation:
+                dG_sol = solvation["delta_G_solution"]
+                result += f"  Solution binding: {dG_sol:.4f} eV ({dG_sol * 23.061:.2f} kcal/mol)\n"
 
         # List files
         result += "\nAvailable files:\n"
@@ -1355,8 +1679,33 @@ async def list_resources() -> list[Resource]:
     """List available resources"""
     resources = []
 
-    if SIMULATIONS_DIR.exists():
-        for sim_dir in SIMULATIONS_DIR.iterdir():
+    # Shared molecules from MCP server directory
+    molecules_dir = MCP_SERVER_DIR / "molecules"
+    if molecules_dir.exists():
+        for f in sorted(molecules_dir.glob("*.sdf")):
+            if not f.name.startswith('.'):
+                resources.append(Resource(
+                    uri=f"rapids://molecules/{f.stem}",
+                    name=f"Molecule: {f.stem}",
+                    description=f"Cached molecule structure",
+                    mimeType="chemical/x-mdl-sdfile"
+                ))
+
+    # Rare molecules from MCP server directory
+    if RARE_MOLECULES_DIR.exists():
+        for f in sorted(RARE_MOLECULES_DIR.glob("*.sdf")):
+            if not f.name.startswith('.'):
+                resources.append(Resource(
+                    uri=f"rapids://rare_molecules/{f.stem}",
+                    name=f"Rare: {f.stem}",
+                    description=f"Pre-optimized complex molecule",
+                    mimeType="chemical/x-mdl-sdfile"
+                ))
+
+    # Simulations from current workspace
+    simulations_dir = get_simulations_dir()
+    if simulations_dir and simulations_dir.exists():
+        for sim_dir in sorted(simulations_dir.iterdir()):
             if sim_dir.is_dir() and (sim_dir / "summary.txt").exists():
                 resources.append(Resource(
                     uri=f"rapids://simulations/{sim_dir.name}",
@@ -1372,9 +1721,31 @@ async def list_resources() -> list[Resource]:
 async def read_resource(uri) -> str:
     """Read a resource"""
     uri_str = str(uri)
+
+    # Shared molecules
+    if uri_str.startswith("rapids://molecules/"):
+        mol_name = uri_str.replace("rapids://molecules/", "")
+        mol_path = MCP_SERVER_DIR / "molecules" / f"{mol_name}.sdf"
+        if mol_path.exists():
+            return mol_path.read_text()
+        return f"Molecule not found: {mol_name}"
+
+    # Rare molecules
+    if uri_str.startswith("rapids://rare_molecules/"):
+        mol_name = uri_str.replace("rapids://rare_molecules/", "")
+        mol_path = RARE_MOLECULES_DIR / f"{mol_name}.sdf"
+        if mol_path.exists():
+            return mol_path.read_text()
+        return f"Rare molecule not found: {mol_name}"
+
+    # Simulations (require workspace)
     if uri_str.startswith("rapids://simulations/"):
+        simulations_dir = get_simulations_dir()
+        if simulations_dir is None:
+            return "No workspace set. Call set_workspace(path) first."
+
         run_name = uri_str.replace("rapids://simulations/", "")
-        sim_dir = SIMULATIONS_DIR / run_name
+        sim_dir = simulations_dir / run_name
 
         if sim_dir.exists():
             summary_path = sim_dir / "summary.txt"

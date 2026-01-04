@@ -46,14 +46,20 @@ VDW_RADII = {
 
 class SimulationBuilder:
     """Build atomic simulation environments from configuration"""
-    
-    def __init__(self, config_file: str = None, config_dict: dict = None):
+
+    # Base directory for all relative paths (directory containing this script)
+    BASE_DIR = Path(__file__).parent.resolve()
+
+    def __init__(self, config_file: str = None, config_dict: dict = None, workspace: str = None):
         """
         Initialize builder with configuration
-        
+
         Args:
             config_file: Path to JSON configuration file
             config_dict: Configuration dictionary (alternative to file)
+            workspace: Optional workspace directory for output. If provided,
+                       simulations and molecules are saved here instead of BASE_DIR.
+                       Substrates and rare_molecules are always read from BASE_DIR.
         """
         if config_file:
             with open(config_file, 'r') as f:
@@ -62,15 +68,30 @@ class SimulationBuilder:
             self.config = config_dict
         else:
             raise ValueError("Must provide either config_file or config_dict")
-            
-        self.substrate_dir = Path("substrate")
-        self.molecules_dir = Path("molecules")
-        self.output_dir = Path(self.config.get("output_dir", "simulations"))
-        self.output_dir.mkdir(exist_ok=True)
-        
-        # Initialize molecule downloader
-        self.downloader = MoleculeDownloader(str(self.molecules_dir))
-        
+
+        # Determine workspace (for outputs) vs BASE_DIR (for shared resources)
+        if workspace:
+            workspace_path = Path(workspace).resolve()
+            self.molecules_dir = workspace_path / "molecules"
+            self.output_dir = workspace_path / "simulations"
+        else:
+            self.molecules_dir = self.BASE_DIR / "molecules"
+            self.output_dir = self.BASE_DIR / self.config.get("output_dir", "simulations")
+
+        # Shared resources always from BASE_DIR (read-only)
+        self.substrate_dir = self.BASE_DIR / "substrate"
+        self.rare_molecules_dir = self.BASE_DIR / "rare_molecules"
+
+        # Ensure output directories exist
+        self.molecules_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize molecule downloader with workspace molecules dir
+        self.downloader = MoleculeDownloader(
+            output_dir=str(self.molecules_dir),
+            rare_dir=str(self.rare_molecules_dir)
+        )
+
         # Store loaded structures
         self.substrate = None
         self.probe = None
@@ -118,20 +139,36 @@ class SimulationBuilder:
         """Download molecule if needed and load it"""
         # Sanitize filename
         filename = name.replace(' ', '_').replace('/', '_')
-        sdf_path = self.molecules_dir / f"{filename}.sdf"
-        
-        # Download if not exists
-        if not sdf_path.exists():
+
+        # Check multiple locations for pre-existing molecules
+        # 1. Workspace molecules directory
+        # 2. Global shared molecules directory (BASE_DIR/molecules)
+        # 3. Rare molecules directory (BASE_DIR/rare_molecules)
+        search_paths = [
+            self.molecules_dir / f"{filename}.sdf",
+            self.BASE_DIR / "molecules" / f"{filename}.sdf",
+            self.BASE_DIR / "rare_molecules" / f"{filename}.sdf",
+        ]
+
+        sdf_path = None
+        for path in search_paths:
+            if path.exists():
+                sdf_path = path
+                break
+
+        # Download to workspace if not found anywhere
+        if sdf_path is None:
+            sdf_path = self.molecules_dir / f"{filename}.sdf"
             print(f"Downloading molecule: {name}")
             result = self.downloader.download_molecule(name, prefer_3d=True)
             if not result:
                 print(f"Failed to download {name}")
                 return None
-                
+
         # Load molecule
         try:
             mol = read(str(sdf_path))
-            print(f"Loaded molecule: {name} ({len(mol)} atoms)")
+            print(f"Loaded molecule: {name} ({len(mol)} atoms) from {sdf_path.parent.name}/")
             return mol
         except Exception as e:
             print(f"Error loading molecule {name}: {e}")
@@ -978,55 +1015,80 @@ class SimulationBuilder:
 
         # 7. Solvated systems (if solvation config provided)
         solvation_config = self.config.get("solvation", None)
-        if solvation_config and self.probe:
+        if solvation_config and solvation_config.get("enabled", False) and self.probe:
             print("\n" + "="*60)
             print("Building solvated structures...")
             print("="*60)
 
-            # Determine which molecules to solvate
-            cluster_molecules = []
+            shell_thickness = solvation_config.get("shell_thickness", 3.0)
 
-            # Position probe for solvation (centered in cell)
+            # 7a. Always create probe_solvated
             probe_for_solv = self.probe.copy()
-            # Set cell before centering
             probe_for_solv.cell = cell.copy()
             probe_for_solv.pbc = [True, True, True]
             probe_for_solv.center()
-            cluster_molecules.append(probe_for_solv)
 
-            # Add target if present
+            probe_props = self.calculate_cluster_properties([probe_for_solv])
+            probe_cell_size = 2 * (probe_props['radius'] + shell_thickness + 5.0)
+            probe_solv_cell = np.diag([max(probe_cell_size, cell[0, 0]),
+                                       max(probe_cell_size, cell[1, 1]),
+                                       max(probe_cell_size, cell[2, 2])])
+
+            probe_solvated, probe_solv_info = self.build_solvated_system(
+                [probe_for_solv], probe_solv_cell, solvation_config
+            )
+            if probe_solvated is not None:
+                structures["probe_solvated"] = probe_solvated
+                print(f"Created: probe_solvated ({probe_solv_info['solvent_count']} {probe_solv_info['solvent']} molecules)")
+
+            # 7b. Create target_solvated if target exists
             if self.target:
                 target_for_solv = self.target.copy()
                 target_for_solv.cell = cell.copy()
                 target_for_solv.pbc = [True, True, True]
+                target_for_solv.center()
+
+                target_props = self.calculate_cluster_properties([target_for_solv])
+                target_cell_size = 2 * (target_props['radius'] + shell_thickness + 5.0)
+                target_solv_cell = np.diag([max(target_cell_size, cell[0, 0]),
+                                            max(target_cell_size, cell[1, 1]),
+                                            max(target_cell_size, cell[2, 2])])
+
+                target_solvated, target_solv_info = self.build_solvated_system(
+                    [target_for_solv], target_solv_cell, solvation_config
+                )
+                if target_solvated is not None:
+                    structures["target_solvated"] = target_solvated
+                    print(f"Created: target_solvated ({target_solv_info['solvent_count']} {target_solv_info['solvent']} molecules)")
+
+                # 7c. Create probe_target_solvated (complex)
+                probe_for_complex = self.probe.copy()
+                probe_for_complex.cell = cell.copy()
+                probe_for_complex.pbc = [True, True, True]
+                probe_for_complex.center()
+
+                target_for_complex = self.target.copy()
+                target_for_complex.cell = cell.copy()
+                target_for_complex.pbc = [True, True, True]
                 # Position target relative to probe
-                probe_com = probe_for_solv.get_center_of_mass()
-                target_com = target_for_solv.get_center_of_mass()
-                # Place target above probe at contact distance
-                contact_dist = self.calculate_contact_distance(probe_for_solv, target_for_solv)
-                target_for_solv.translate(probe_com - target_com + np.array([0, 0, contact_dist]))
-                cluster_molecules.append(target_for_solv)
+                probe_com = probe_for_complex.get_center_of_mass()
+                target_com = target_for_complex.get_center_of_mass()
+                contact_dist = self.calculate_contact_distance(probe_for_complex, target_for_complex)
+                target_for_complex.translate(probe_com - target_com + np.array([0, 0, contact_dist]))
 
-            # Build solvated system
-            # Ensure cell is large enough
-            cluster_props = self.calculate_cluster_properties(cluster_molecules)
-            shell_thickness = solvation_config.get("shell_thickness", 3.0)
-            min_cell_size = 2 * (cluster_props['radius'] + shell_thickness + 5.0)
-            solv_cell = np.diag([max(min_cell_size, cell[0, 0]),
-                                 max(min_cell_size, cell[1, 1]),
-                                 max(min_cell_size, cell[2, 2])])
+                complex_molecules = [probe_for_complex, target_for_complex]
+                complex_props = self.calculate_cluster_properties(complex_molecules)
+                complex_cell_size = 2 * (complex_props['radius'] + shell_thickness + 5.0)
+                complex_solv_cell = np.diag([max(complex_cell_size, cell[0, 0]),
+                                             max(complex_cell_size, cell[1, 1]),
+                                             max(complex_cell_size, cell[2, 2])])
 
-            solvated_system, solv_info = self.build_solvated_system(
-                cluster_molecules, solv_cell, solvation_config
-            )
-
-            if solvated_system is not None:
-                if self.target:
-                    structures["probe_target_solvated"] = solvated_system
-                    print(f"Created: probe_target_solvated ({solv_info['solvent_count']} {solv_info['solvent']} molecules)")
-                else:
-                    structures["probe_solvated"] = solvated_system
-                    print(f"Created: probe_solvated ({solv_info['solvent_count']} {solv_info['solvent']} molecules)")
+                complex_solvated, complex_solv_info = self.build_solvated_system(
+                    complex_molecules, complex_solv_cell, solvation_config
+                )
+                if complex_solvated is not None:
+                    structures["probe_target_solvated"] = complex_solvated
+                    print(f"Created: probe_target_solvated ({complex_solv_info['solvent_count']} {complex_solv_info['solvent']} molecules)")
 
         return structures
         

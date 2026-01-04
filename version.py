@@ -2,10 +2,18 @@
 RAPIDS Version Information
 """
 
-__version__ = "1.4.0"
-__version_info__ = (1, 4, 0)
+__version__ = "1.8.0"
+__version_info__ = (1, 8, 0)
 
 # Version history
+# 1.8.0 - xTB implicit solvation: automatic GFN2-xTB + ALPB water solvation free energy
+#         calculation for vacuum mode simulations. Shared molecule library across workspaces.
+# 1.7.1 - Fixed solvation support: SmartFAIRChemFlow now optimizes solvated structures,
+#         SimulationBuilder creates separate probe/target/complex solvated structures
+# 1.7.0 - Workspace isolation: agents must set workspace before running simulations
+# 1.6.0 - Added scan_orientations tool for finding optimal molecular configurations
+# 1.5.0 - MCP server improvements
+# 1.4.1 - Fixed relative path issue: MCP server now works from any directory
 # 1.4.0 - Relative positioning, contact distance mode, automatic solvation
 # 1.3.0 - Multi-target batch screening, energy definitions in UI/docs
 # 1.2.1 - Fixed batch screening functionality with complete visualization suite

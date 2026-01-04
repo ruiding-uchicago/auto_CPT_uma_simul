@@ -29,16 +29,34 @@ try:
 except ImportError:
     FAIRCHEM_AVAILABLE = False
 
+# xTB for solvation free energy calculations
+try:
+    from xtb.ase.calculator import XTB
+    XTB_AVAILABLE = True
+except ImportError:
+    XTB_AVAILABLE = False
+
 from simulation_builder import SimulationBuilder
 from molecule_downloader import MoleculeDownloader
 
 
 class SmartFAIRChemFlow:
     """Enhanced FAIRChem workflow with intelligent features"""
-    
-    def __init__(self, config_file: str = None, config_dict: dict = None):
-        """Initialize with smart defaults"""
-        
+
+    # Base directory for all relative paths (directory containing this script)
+    BASE_DIR = Path(__file__).parent.resolve()
+
+    def __init__(self, config_file: str = None, config_dict: dict = None, workspace: str = None):
+        """Initialize with smart defaults
+
+        Args:
+            config_file: Path to JSON configuration file
+            config_dict: Configuration dictionary (alternative to file)
+            workspace: Optional workspace directory for output. If provided,
+                       simulations are saved here instead of BASE_DIR.
+        """
+        self.workspace = Path(workspace).resolve() if workspace else None
+
         # Load configuration
         if config_file:
             with open(config_file, 'r') as f:
@@ -47,21 +65,24 @@ class SmartFAIRChemFlow:
             self.config = config_dict
         else:
             raise ValueError("Must provide either config_file or config_dict")
-        
+
         # Apply smart defaults
         self.apply_smart_defaults()
-        
-        # Setup
+
+        # Setup - use workspace if provided, otherwise BASE_DIR
         self.run_name = self.config.get("run_name", self.generate_run_name())
-        self.output_dir = Path(self.config.get("output_dir", "simulations")) / self.run_name
+        if self.workspace:
+            self.output_dir = self.workspace / "simulations" / self.run_name
+        else:
+            self.output_dir = self.BASE_DIR / self.config.get("output_dir", "simulations") / self.run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Model settings
         self.model_name = self.config.get("model_name", "uma-s-1p1")
         self.device = self.config.get("device", "cpu")
         
-        # Task selection - default to omat, allow user override
-        self.task_name = self.config.get("task_name", "omat")
+        # Task selection - default to omol (has VV10 dispersion for molecular interactions)
+        self.task_name = self.config.get("task_name", "omol")
         
         # Optimization settings
         self.fmax = self.config.get("fmax", 0.05)
@@ -75,6 +96,7 @@ class SmartFAIRChemFlow:
             
         self.energies = {}
         self.warnings = []
+        self.solvation_energies = {}  # xTB solvation free energies
         
     def apply_smart_defaults(self):
         """Apply intelligent defaults based on system"""
@@ -277,8 +299,12 @@ class SmartFAIRChemFlow:
         if self.config.get("box_size") == "auto":
             # First load molecules to determine size
             # Create a temporary builder just to access download_and_load_molecule
-            temp_builder = SimulationBuilder(config_dict=self.config)
-            
+            # Pass workspace to ensure molecules are saved to correct location
+            temp_builder = SimulationBuilder(
+                config_dict=self.config,
+                workspace=str(self.workspace) if self.workspace else None
+            )
+
             molecules = []
             if self.config.get("probe"):
                 mol = temp_builder.download_and_load_molecule(self.config["probe"])
@@ -288,12 +314,16 @@ class SmartFAIRChemFlow:
                 mol = temp_builder.download_and_load_molecule(self.config["target"])
                 if mol:
                     molecules.append(mol)
-                    
+
             # Calculate optimal box
             self.config["box_size"] = self.calculate_optimal_box_size(molecules)
-            
+
         # Now build with optimized settings
-        builder = SimulationBuilder(config_dict=self.config)
+        # Pass workspace to ensure outputs are saved to correct location
+        builder = SimulationBuilder(
+            config_dict=self.config,
+            workspace=str(self.workspace) if self.workspace else None
+        )
         structures = builder.build_simulation()
         builder.save_structures(structures)
         
@@ -325,14 +355,17 @@ class SmartFAIRChemFlow:
         optimized = {}
         convergence_status = {}
         
-        # Optimize each structure
-        for struct_name in ["substrate_only", "probe_vacuum", "target_vacuum", 
-                           "probe_substrate", "probe_target_vacuum"]:
+        # Optimize each structure (including solvated systems)
+        for struct_name in ["substrate_only", "probe_vacuum", "target_vacuum",
+                           "probe_substrate", "probe_target_vacuum",
+                           "probe_solvated", "target_solvated", "probe_target_solvated"]:
             if struct_name in structures:
+                # Solvated systems don't have substrate to fix
+                fix_sub = (struct_name in ["substrate_only", "probe_substrate"])
                 opt_struct, converged = self.smart_optimize(
                     structures[struct_name],
                     struct_name,
-                    fix_substrate=(struct_name in ["substrate_only", "probe_substrate"])
+                    fix_substrate=fix_sub
                 )
                 optimized[struct_name] = opt_struct
                 convergence_status[struct_name] = converged
@@ -392,7 +425,10 @@ class SmartFAIRChemFlow:
                 
         # Calculate interaction energies
         self.calculate_and_report_interactions()
-        
+
+        # Calculate xTB solvation (vacuum mode only)
+        self.calculate_all_solvation()
+
         # Final report
         self.generate_smart_report(convergence_status)
         
@@ -424,27 +460,45 @@ class SmartFAIRChemFlow:
         
         # Three-component system interactions
         if all(k in self.energies for k in ["probe_target_substrate", "probe_substrate", "target_vacuum"]):
-            # Target binding to probe on substrate
-            e_target_binding = self.energies["probe_target_substrate"] - self.energies["probe_substrate"] - self.energies["target_vacuum"]
-            results["target_binding_to_adsorbed_probe"] = e_target_binding
-            print(f"Target binding to adsorbed probe: {e_target_binding:.4f} eV")
-            
+            # Target adsorption to probe on substrate
+            e_target_ads = self.energies["probe_target_substrate"] - self.energies["probe_substrate"] - self.energies["target_vacuum"]
+            results["target_adsorption_to_adsorbed_probe"] = e_target_ads
+            print(f"Target adsorption to adsorbed probe: {e_target_ads:.4f} eV")
+
             # Total interaction energy (all three components)
             if all(k in self.energies for k in ["substrate_only", "probe_vacuum"]):
                 e_total = self.energies["probe_target_substrate"] - self.energies["substrate_only"] - self.energies["probe_vacuum"] - self.energies["target_vacuum"]
                 results["total_three_component_interaction"] = e_total
                 print(f"Total three-component interaction: {e_total:.4f} eV")
-                
+
             # Compare with vacuum interaction
             if "probe_target_vacuum" in results:
-                e_substrate_effect = e_target_binding - results["probe_target_vacuum"]
-                results["substrate_effect_on_binding"] = e_substrate_effect
-                print(f"Substrate effect on probe-target binding: {e_substrate_effect:.4f} eV")
+                e_substrate_effect = e_target_ads - results["probe_target_vacuum"]
+                results["substrate_effect_on_interaction"] = e_substrate_effect
+                print(f"Substrate effect on probe-target interaction: {e_substrate_effect:.4f} eV")
                 if e_substrate_effect < 0:
-                    print("  → Substrate enhances probe-target binding")
+                    print("  → Substrate enhances probe-target interaction")
                 elif e_substrate_effect > 0:
-                    print("  → Substrate weakens probe-target binding")
-                
+                    print("  → Substrate weakens probe-target interaction")
+
+        # Solvated probe-target interaction
+        # Note: This is an approximation since water molecule counts may differ between systems
+        if all(k in self.energies for k in ["probe_target_solvated", "probe_solvated", "target_solvated"]):
+            # Raw energy difference (includes water molecule count differences)
+            e_int_solv_raw = (self.energies["probe_target_solvated"]
+                              - self.energies["probe_solvated"]
+                              - self.energies["target_solvated"])
+            results["probe_target_solvated_raw"] = e_int_solv_raw
+            print(f"\nSolvated Probe-Target interaction (raw): {e_int_solv_raw:.4f} eV")
+            print("  ⚠️  Note: Raw value includes water count differences between systems")
+
+            # Compare with vacuum if available
+            if "probe_target_vacuum" in results:
+                print(f"  Vacuum interaction for reference: {results['probe_target_vacuum']:.4f} eV")
+                solvation_effect = e_int_solv_raw - results["probe_target_vacuum"]
+                results["solvation_effect"] = solvation_effect
+                print(f"  Solvation effect (qualitative): {solvation_effect:.4f} eV")
+
         # Save results
         with open(self.output_dir / "interactions.json", 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2)
@@ -481,9 +535,124 @@ class SmartFAIRChemFlow:
             f.write("-"*40 + "\n")
             for name, energy in self.energies.items():
                 f.write(f"{name}: {energy:.4f}\n")
-                
+
+            # Solvation analysis (if available)
+            if self.solvation_energies:
+                f.write("\nSOLVATION ANALYSIS (xTB GFN2-xTB + ALPB water):\n")
+                f.write("-"*40 + "\n")
+                for name in ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]:
+                    if name in self.solvation_energies:
+                        g_solv = self.solvation_energies[name]
+                        kcal = g_solv * 23.061
+                        f.write(f"G_solv({name}): {g_solv:.4f} eV ({kcal:.2f} kcal/mol)\n")
+
+                if "delta_G_solvation" in self.solvation_energies:
+                    delta_g = self.solvation_energies["delta_G_solvation"]
+                    kcal = delta_g * 23.061
+                    f.write(f"\nΔG_solvation (desolvation penalty): {delta_g:.4f} eV ({kcal:.2f} kcal/mol)\n")
+
+                if "delta_G_solution" in self.solvation_energies:
+                    # Calculate vacuum binding for comparison
+                    if all(k in self.energies for k in ["probe_target_vacuum", "probe_vacuum", "target_vacuum"]):
+                        e_vac = (self.energies["probe_target_vacuum"]
+                                - self.energies["probe_vacuum"]
+                                - self.energies["target_vacuum"])
+                        e_sol = self.solvation_energies["delta_G_solution"]
+                        f.write(f"\nBINDING ENERGY COMPARISON:\n")
+                        f.write(f"  Vacuum:   {e_vac:.4f} eV ({e_vac * 23.061:.2f} kcal/mol)\n")
+                        f.write(f"  Solution: {e_sol:.4f} eV ({e_sol * 23.061:.2f} kcal/mol)\n")
+
         print(f"\n📊 Report saved: {report_path}")
-        
+
+    def calculate_xtb_solvation(self, atoms: Atoms, name: str) -> Optional[float]:
+        """Calculate solvation free energy using xTB GFN2-xTB + ALPB water
+
+        Args:
+            atoms: ASE Atoms object (optimized structure)
+            name: Name for logging
+
+        Returns:
+            Solvation free energy in eV, or None if calculation fails
+        """
+        if not XTB_AVAILABLE:
+            return None
+
+        try:
+            # Gas phase calculation
+            atoms_gas = atoms.copy()
+            atoms_gas.calc = XTB(method="GFN2-xTB")
+            e_gas = atoms_gas.get_potential_energy()
+
+            # Solvated calculation (ALPB implicit water)
+            atoms_solv = atoms.copy()
+            atoms_solv.calc = XTB(method="GFN2-xTB", solvent="water")
+            e_solv = atoms_solv.get_potential_energy()
+
+            # Solvation free energy
+            g_solv = e_solv - e_gas
+            return g_solv
+
+        except Exception as e:
+            print(f"  ⚠️ xTB solvation failed for {name}: {e}")
+            return None
+
+    def calculate_all_solvation(self):
+        """Calculate solvation free energies for all vacuum structures"""
+
+        # Only for vacuum mode
+        substrate = self.config.get("substrate", "vacuum")
+        if substrate != "vacuum":
+            print("\n⚠️ xTB solvation only available for vacuum mode")
+            return
+
+        if not XTB_AVAILABLE:
+            print("\n⚠️ xTB not available - skipping solvation calculations")
+            return
+
+        print("\n" + "="*60)
+        print("SOLVATION ANALYSIS (xTB GFN2-xTB + ALPB water)")
+        print("="*60)
+
+        # Calculate for each optimized vacuum structure
+        structures_to_calc = ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]
+
+        for name in structures_to_calc:
+            struct_path = self.output_dir / f"{name}_optimized.vasp"
+            if struct_path.exists():
+                print(f"\n  Calculating G_solv for {name}...")
+                atoms = read(str(struct_path))
+                g_solv = self.calculate_xtb_solvation(atoms, name)
+                if g_solv is not None:
+                    self.solvation_energies[name] = g_solv
+                    kcal = g_solv * 23.061
+                    print(f"  G_solv({name}): {g_solv:.4f} eV ({kcal:.2f} kcal/mol)")
+
+        # Calculate delta G solvation if all components available
+        if all(k in self.solvation_energies for k in ["probe_vacuum", "target_vacuum", "probe_target_vacuum"]):
+            delta_g = (self.solvation_energies["probe_target_vacuum"]
+                      - self.solvation_energies["probe_vacuum"]
+                      - self.solvation_energies["target_vacuum"])
+            self.solvation_energies["delta_G_solvation"] = delta_g
+            kcal = delta_g * 23.061
+            print(f"\n  ΔG_solvation (desolvation penalty): {delta_g:.4f} eV ({kcal:.2f} kcal/mol)")
+
+            # Calculate solution binding energy
+            if "probe_target_vacuum" in self.energies and "probe_vacuum" in self.energies and "target_vacuum" in self.energies:
+                e_bind_vacuum = (self.energies["probe_target_vacuum"]
+                                - self.energies["probe_vacuum"]
+                                - self.energies["target_vacuum"])
+                e_bind_solution = e_bind_vacuum + delta_g
+                self.solvation_energies["delta_G_solution"] = e_bind_solution
+                print(f"\n  Vacuum binding:   {e_bind_vacuum:.4f} eV ({e_bind_vacuum * 23.061:.2f} kcal/mol)")
+                print(f"  Solution binding: {e_bind_solution:.4f} eV ({e_bind_solution * 23.061:.2f} kcal/mol)")
+
+        # Save solvation data
+        if self.solvation_energies:
+            solvation_path = self.output_dir / "solvation.json"
+            with open(solvation_path, 'w', encoding='utf-8') as f:
+                json.dump(self.solvation_energies, f, indent=2)
+            print(f"\n  💾 Solvation data saved: {solvation_path}")
+
 
 def main():
     """Enhanced command line interface"""
