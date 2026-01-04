@@ -26,7 +26,7 @@ Step-by-step examples for beginners:
 
 ### 🔬 screening/ (Use `batch_comparison.py`)
 Batch comparison configs for screening multiple molecules:
-- `sugar_screening.json` - Compare 5 sugars binding to caffeine on Graphene (three-component)
+- `sugar_screening.json` - Compare 5 sugars interacting with caffeine on Graphene (three-component)
 - `amino_acid_adsorption.json` - Test amino acids on MoS2
 - `drug_screening_vacuum.json` - Drug encapsulation study
 
@@ -80,8 +80,8 @@ Real-world research applications:
 When both `probe`, `target`, and `substrate` are specified:
 1. First optimizes probe on substrate
 2. Then adds target to the optimized probe-substrate system
-3. Calculates realistic binding energy in presence of substrate
-4. Shows substrate effect on probe-target binding
+3. Calculates realistic adsorption energy in presence of substrate
+4. Shows substrate effect on probe-target interaction
 
 This provides more accurate results than vacuum calculations alone!
 

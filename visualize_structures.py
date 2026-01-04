@@ -267,7 +267,7 @@ def generate_html_viewer(structures: Dict[str, str], energy_data: Dict[str, floa
             'probe_substrate_optimized.vasp': {{
                 key: 'probe_adsorption',
                 label: 'Probe Adsorption Energy',
-                description: 'Energy of probe binding to substrate'
+                description: 'Energy of probe adsorption to substrate'
             }},
             'probe_target_vacuum_optimized.vasp': {{
                 key: 'probe_target_vacuum',
@@ -275,9 +275,9 @@ def generate_html_viewer(structures: Dict[str, str], energy_data: Dict[str, floa
                 description: 'Direct interaction energy between probe and target in vacuum'
             }},
             'probe_target_substrate_optimized.vasp': {{
-                key: 'target_binding_to_adsorbed_probe',
-                label: 'Target Binding to Adsorbed Probe',
-                description: 'Energy of target binding to probe on substrate'
+                key: 'target_adsorption_to_adsorbed_probe',
+                label: 'Target Adsorption to Adsorbed Probe',
+                description: 'Energy of target adsorption to probe on substrate'
             }},
             'substrate_only_optimized.vasp': {{
                 key: null,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Batch Comparison Tool for Multiple Probe Screening
-Compare binding energies of multiple probe molecules with the same target
+Compare adsorption energies of multiple probe molecules with the same target
 """
 
 import json
@@ -21,10 +21,20 @@ matplotlib.use('Agg')  # Non-interactive backend
 
 class BatchComparison:
     """Compare multiple probe molecules against the same target"""
-    
-    def __init__(self, config_file: str = None, config_dict: dict = None):
-        """Initialize batch comparison"""
-        
+
+    # Base directory for all relative paths (directory containing this script)
+    BASE_DIR = Path(__file__).parent.resolve()
+
+    def __init__(self, config_file: str = None, config_dict: dict = None, workspace: str = None):
+        """Initialize batch comparison
+
+        Args:
+            config_file: Path to JSON configuration file
+            config_dict: Configuration dictionary (alternative to file)
+            workspace: Optional workspace directory. If provided, outputs are saved here.
+        """
+        self.workspace = Path(workspace).resolve() if workspace else None
+
         # Load configuration
         if config_file:
             with open(config_file, 'r') as f:
@@ -33,7 +43,7 @@ class BatchComparison:
             self.config = config_dict
         else:
             raise ValueError("Must provide either config_file or config_dict")
-            
+
         # Validate configuration
         if "probes" not in self.config:
             # Backward compatibility: convert single probe to list
@@ -42,7 +52,7 @@ class BatchComparison:
                 print("Note: Converting single probe to batch format")
             else:
                 raise ValueError("Must specify 'probes' (list) or 'probe' (single)")
-                
+
         self.probes = self.config["probes"]
 
         # Support multiple targets (optional)
@@ -60,7 +70,7 @@ class BatchComparison:
 
         # Backward compatibility helpers
         self.target = self.targets[0] if self.targets else None
-        
+
         # Support both single substrate and multiple substrates
         if "substrates" in self.config:
             self.substrates = self.config["substrates"]
@@ -68,9 +78,13 @@ class BatchComparison:
             self.substrates = [self.config["substrate"]]
         else:
             self.substrates = ["vacuum"]
-        
+
         # Output directory for comparison results
-        self.output_dir = Path(self.config.get("output_dir", "simulations"))
+        # Use workspace if provided, otherwise BASE_DIR
+        if self.workspace:
+            self.output_dir = self.workspace / "simulations"
+        else:
+            self.output_dir = self.BASE_DIR / self.config.get("output_dir", "simulations")
         self.comparison_name = self.config.get("comparison_name", self.generate_comparison_name())
         self.comparison_dir = self.output_dir / f"comparison_{self.comparison_name}"
         self.comparison_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +137,10 @@ class BatchComparison:
         
         # Run FAIRChem workflow
         try:
-            flow = SmartFAIRChemFlow(config_dict=single_config)
+            flow = SmartFAIRChemFlow(
+                config_dict=single_config,
+                workspace=str(self.workspace) if self.workspace else None
+            )
             flow.run_workflow()
             
             # Extract results
@@ -147,21 +164,21 @@ class BatchComparison:
                     # Keep backward compatibility
                     result["probe_target_interaction"] = result["probe_target_interaction_vacuum"]
                 
-                # Three-component system: Target binding to adsorbed probe
+                # Three-component system: Target adsorption to adsorbed probe
                 if substrate != "vacuum":
                     if all(k in flow.energies for k in ["probe_target_substrate", "probe_substrate", "target_vacuum"]):
-                        result["target_binding_on_substrate"] = (
-                            flow.energies["probe_target_substrate"] - 
-                            flow.energies["probe_substrate"] - 
+                        result["target_adsorption_on_substrate"] = (
+                            flow.energies["probe_target_substrate"] -
+                            flow.energies["probe_substrate"] -
                             flow.energies["target_vacuum"]
                         )
                         # This is the most relevant interaction for substrate systems
-                        result["probe_target_interaction"] = result["target_binding_on_substrate"]
-                        
+                        result["probe_target_interaction"] = result["target_adsorption_on_substrate"]
+
                         # Calculate substrate effect
                         if "probe_target_interaction_vacuum" in result:
                             result["substrate_effect"] = (
-                                result["target_binding_on_substrate"] - 
+                                result["target_adsorption_on_substrate"] -
                                 result["probe_target_interaction_vacuum"]
                             )
                     
@@ -297,16 +314,16 @@ class BatchComparison:
         if "probe_target_interaction_vacuum" in result:
             f.write(f"Probe-Target interaction (vacuum): {result['probe_target_interaction_vacuum']:.4f} eV\n")
             
-        if "target_binding_on_substrate" in result:
-            f.write(f"Target binding to adsorbed probe: {result['target_binding_on_substrate']:.4f} eV\n")
-            
+        if "target_adsorption_on_substrate" in result:
+            f.write(f"Target adsorption to adsorbed probe: {result['target_adsorption_on_substrate']:.4f} eV\n")
+
         if "substrate_effect" in result:
             effect = result["substrate_effect"]
-            f.write(f"Substrate effect on binding: {effect:.4f} eV ")
+            f.write(f"Substrate effect on interaction: {effect:.4f} eV ")
             if effect < 0:
-                f.write("(enhances binding)\n")
+                f.write("(enhances interaction)\n")
             else:
-                f.write("(weakens binding)\n")
+                f.write("(weakens interaction)\n")
                 
         if "probe_adsorption" in result:
             f.write(f"Probe adsorption energy: {result['probe_adsorption']:.4f} eV\n")
@@ -530,7 +547,7 @@ Example configuration for batch comparison:
   "comparison_name": "sugar_screening"
 }
 
-This will test each probe molecule and rank them by binding affinity.
+This will test each probe molecule and rank them by adsorption affinity.
         """
     )
     

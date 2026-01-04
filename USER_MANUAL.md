@@ -101,9 +101,10 @@ See `example_configs/README.md` for detailed descriptions.
 
 #### Basic Parameters
 - `target`: Target molecule (for probe-target interaction studies)
-- `task_name`: FAIRChem task type, default "omat"
-  - "omat": Open Catalyst 2020 (default, recommended)
-  - "oc20": Open Catalyst 2020
+- `task_name`: FAIRChem task type, default "omol". Options:
+  - "omol": OMol25, has VV10 dispersion (recommended for molecular interactions)
+  - "oc20": Open Catalyst 2020, for catalysis systems
+  - "omat": OMat24, for materials/surfaces
 - `box_size`: Simulation box dimensions, default "auto" for automatic calculation
 - `probe_height`: Probe molecule height from substrate, default 2.5 Å (used with auto positioning)
 - `target_height`: Target molecule height, default probe_height + 3.5 Å (used with auto positioning)
@@ -180,9 +181,9 @@ Generated in `simulations/[run_name]/` directory:
 #### Energy Definitions (all in eV)
 - **Adsorption energy** = E(probe + substrate) − E(probe) − E(substrate)
 - **Interaction energy (vacuum)** = E(probe + target in vacuum) − E(probe) − E(target)
-- **Total three-component binding** = E(probe + target + substrate) − E(probe) − E(target) − E(substrate)
+- **Total three-component interaction** = E(probe + target + substrate) − E(probe) − E(target) − E(substrate)
 
-Negative values indicate the combined system is more stable than the separated molecules (favourable binding); positive values mean the configuration is unfavourable and likely to dissociate.
+Negative values indicate the combined system is more stable than the separated molecules (favourable adsorption/interaction); positive values mean the configuration is unfavourable and likely to dissociate.
 
 ## Results Interpretation
 
@@ -200,20 +201,20 @@ E_int_vac = E(probe_target_vacuum) - E(probe_vacuum) - E(target_vacuum)
 - **Negative values**: Attractive interaction
 - **Positive values**: Repulsive interaction
 
-### Target Binding to Adsorbed Probe (Three-Component)
+### Target Adsorption to Adsorbed Probe (Three-Component)
 ```
-E_binding = E(probe_target_substrate) - E(probe_substrate_optimized) - E(target_vacuum)
+E_ads = E(probe_target_substrate) - E(probe_substrate_optimized) - E(target_vacuum)
 ```
-- **Negative values**: Favorable binding
-- **Positive values**: Unfavorable binding
-- This represents the realistic scenario where target binds to an already-adsorbed probe
+- **Negative values**: Favorable adsorption
+- **Positive values**: Unfavorable adsorption
+- This represents the realistic scenario where target adsorbs to an already-adsorbed probe
 
-### Substrate Effect on Binding
+### Substrate Effect on Interaction
 ```
-E_substrate_effect = E_binding - E_int_vac
+E_substrate_effect = E_ads - E_int_vac
 ```
-- **Negative values**: Substrate enhances probe-target binding
-- **Positive values**: Substrate weakens probe-target binding
+- **Negative values**: Substrate enhances probe-target interaction
+- **Positive values**: Substrate weakens probe-target interaction
 
 ## Smart Features
 

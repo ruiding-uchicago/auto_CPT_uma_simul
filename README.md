@@ -69,8 +69,8 @@ The web interface provides:
 
 - **Automatic molecule download** from chemical names (PubChem + rare molecules collection)
 - **Smart optimization** with auto-continuation and structure validation
-- **Batch screening** - Compare multiple molecules and rank by binding affinity
-- **Three-component system** - Calculates target binding to already-adsorbed probe on substrate
+- **Batch screening** - Compare multiple molecules and rank by adsorption affinity
+- **Three-component system** - Calculates target adsorption to already-adsorbed probe on substrate
 - **Advanced placement** - Custom molecular positioning for MOF pores, etc.
 - **Cross-platform** - Works on Mac, Linux, and Windows
 - **Minimum hardware required** - User can use cuda, or default CPU for edge device users.
@@ -112,10 +112,10 @@ Or create your own minimal config:
 
 ## Batch Screening
 
-Compare multiple molecules to find the best binder:
+Compare multiple molecules to find the strongest adsorbate:
 
 ```bash
-# Screen sugars binding to caffeine
+# Screen sugars interaction with caffeine
 python batch_comparison.py example_configs/screening/sugar_screening.json
 ```
 
@@ -162,16 +162,16 @@ Results in `simulations/[run_name]/`:
   - `probe_target_substrate_optimized.vasp` - Three-component system
 - Interaction energies (`interactions.json`)
   - Probe adsorption energy
-  - Target binding to adsorbed probe
-  - Substrate effect on binding
+  - Target adsorption to adsorbed probe
+  - Substrate effect on interaction
 - Analysis report (`smart_report.txt`)
 
 ### Energy Definitions (all values in eV)
 - **Adsorption energy** = E(probe+substrate) − E(probe) − E(substrate)
 - **Interaction energy (vacuum)** = E(probe+target in vacuum) − E(probe) − E(target)
-- **Total three-component binding** = E(probe+target+substrate) − E(probe) − E(target) − E(substrate)
+- **Total three-component interaction** = E(probe+target+substrate) − E(probe) − E(target) − E(substrate)
 
-Negative values indicate the process releases energy (favorable binding); positive values mean the configuration is energetically unfavourable compared to separated components.
+Negative values indicate the process releases energy (favorable adsorption/interaction); positive values mean the configuration is energetically unfavourable compared to separated components.
 
 ## Documentation
 

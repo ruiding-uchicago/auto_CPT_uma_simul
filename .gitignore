@@ -59,6 +59,11 @@ Temporary Items
 # Project specific
 simulations/
 molecules/*.sdf
+cache/
 *.vasp
 *.traj
 *.json.backup
+
+# AI assistants
+.gemini/
+.claude/

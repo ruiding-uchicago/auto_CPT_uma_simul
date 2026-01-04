@@ -726,7 +726,7 @@
             <div id="results" style="display: none;">
                 <h3>Results</h3>
                 <div style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6; margin-bottom: 10px;">
-                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable binding.
+                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable adsorption/interaction.
                 </div>
                 <div class="results-grid">
                     <div class="result-card">
@@ -804,7 +804,7 @@
                     <select id="batch-results-target" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--cyber-primary); background: rgba(0, 20, 40, 0.6); color: var(--cyber-primary);"></select>
                 </div>
                 <div style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6; margin-bottom: 10px;">
-                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable binding.
+                    <strong>Energy definitions:</strong> Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target in vacuum) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Lower (more negative) values indicate more favorable adsorption/interaction.
                 </div>
                 <canvas id="batch-chart" style="margin: 20px 0;"></canvas>
                 <table style="width: 100%; border-collapse: collapse;">
@@ -826,7 +826,7 @@
         <div id="quick-tab" class="tab-content">
             <h3>Quick Test Examples</h3>
             <p>Click any example to run immediately:</p>
-            <p style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6;">Energy reference: Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Negative values denote favourable binding.</p>
+            <p style="color: var(--cyber-primary); font-size: 12px; line-height: 1.6;">Energy reference: Adsorption = E(probe+substrate) − E(probe) − E(substrate); Interaction = E(probe+target) − E(probe) − E(target); Total = E(probe+target+substrate) − E(probe) − E(target) − E(substrate). Negative values denote favourable adsorption/interaction.</p>
             
             <div style="display: grid; gap: 10px; margin-top: 20px;">
                 <button class="btn btn-primary" onclick="quickRun('glucose', 'Graphene')">
@@ -1018,12 +1018,12 @@
                 document.getElementById('ads-energy').textContent = results.probe_adsorption.toFixed(4);
                 document.getElementById('int-energy').textContent = results.probe_target_vacuum?.toFixed(4) || '--';
                 
-                if (results.substrate_effect_on_binding !== undefined) {
-                    addOutput(`📊 Substrate effect: ${results.substrate_effect_on_binding.toFixed(4)} eV`, '#64b5f6');
-                    if (results.substrate_effect_on_binding < 0) {
-                        addOutput('→ Substrate enhances probe-target binding', '#4caf50');
+                if (results.substrate_effect_on_interaction !== undefined) {
+                    addOutput(`📊 Substrate effect: ${results.substrate_effect_on_interaction.toFixed(4)} eV`, '#64b5f6');
+                    if (results.substrate_effect_on_interaction < 0) {
+                        addOutput('→ Substrate enhances probe-target interaction', '#4caf50');
                     } else {
-                        addOutput('→ Substrate weakens probe-target binding', '#ffa500');
+                        addOutput('→ Substrate weakens probe-target interaction', '#ffa500');
                     }
                 }
                 if (results.total_three_component_interaction !== undefined) {
@@ -1339,7 +1339,7 @@
                     molecule: probe,
                     adsorption: data.probe_adsorption ?? 0,
                     interaction: data.probe_target_interaction ?? data.probe_target_interaction_vacuum ?? 0,
-                    total: data.target_binding_on_substrate ?? data.probe_target_interaction ?? data.probe_target_interaction_vacuum ?? 0
+                    total: data.target_adsorption_on_substrate ?? data.probe_target_interaction ?? data.probe_target_interaction_vacuum ?? 0
                 });
             });
 
@@ -1377,7 +1377,7 @@
                             borderWidth: 2
                         },
                         {
-                            label: 'Total Binding Energy (eV)',
+                            label: 'Total Interaction Energy (eV)',
                             data: processedResults.map(r => r.total),
                             backgroundColor: 'rgba(255, 99, 132, 0.8)',
                             borderColor: 'rgba(255, 99, 132, 1)',
