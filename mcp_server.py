@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAPIDS MCP Server (v1.7.0)
+RAPIDS MCP Server (v1.8.1)
 ==========================
 Model Context Protocol server for RAPIDS molecular simulation toolkit.
 
@@ -134,7 +134,7 @@ AVAILABLE_SUBSTRATES = [
 # Create server instance
 server = Server(
     name="rapids",
-    version="1.7.0",
+    version="1.8.1",
     instructions="""RAPIDS (Rapid Adsorption Probe Interaction Discovery System) is a molecular simulation toolkit.
 
 === IMPORTANT: WORKSPACE SETUP ===
@@ -167,9 +167,27 @@ Your workspace will contain:
 
 - Automatic molecule download from PubChem (just use the molecule name)
 - 9 pre-built substrates: Graphene, MoS2, BP, Si, ZnO, Co/Cu/Ni_HHTP MOFs
-- Support for solvation (explicit water molecules)
+- xTB implicit solvation (automatic with optimize_structure)
 - Van der Waals contact distance mode
 - Relative positioning between molecules
+
+=== SOLVATION - IMPORTANT ===
+
+TWO solvation methods are available:
+
+1. xTB IMPLICIT SOLVATION (RECOMMENDED) - runs AUTOMATICALLY with optimize_structure()
+   - Uses GFN2-xTB + ALPB water model
+   - Fast (~seconds per molecule)
+   - Gives "Solution binding" energy in solvation.json
+   - NO configuration needed - just run optimize_structure()
+
+2. EXPLICIT SOLVATION (NOT RECOMMENDED) - explicit_solvation parameter in build_simulation
+   - Adds REAL water molecules to the simulation box
+   - MUCH slower (many more atoms to optimize)
+   - Only use for: MD simulations, specific solvent structure studies
+   - DO NOT use for normal screening tasks!
+
+For binding energy screening: Just use optimize_structure() → get Solution binding from results
 
 === TASK SELECTION GUIDE ===
 
@@ -404,15 +422,19 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Number of substrate layers to fix during optimization (default: 1). Set to 0 to allow all atoms to move."
                     },
-                    # Solvation parameters
-                    "solvation": {
+                    # Explicit solvation parameters (NOT RECOMMENDED for most tasks)
+                    "explicit_solvation": {
                         "type": "object",
-                        "description": "Solvation settings. Examples: "
+                        "description": "⚠️ EXPLICIT SOLVATION - NOT RECOMMENDED for most tasks! "
+                                      "This adds REAL water molecules to the simulation box, making calculations MUCH slower. "
+                                      "For binding energy calculations, use optimize_structure() instead - it automatically "
+                                      "runs xTB implicit solvation (ALPB) which is fast and gives Solution binding energies. "
+                                      "Only use explicit solvation for: (1) MD simulations, (2) studying specific solvent effects. "
+                                      "Examples if you really need it: "
                                       "1) Auto mode: {\"enabled\": true, \"mode\": \"auto\", \"shell_thickness\": 5.0} "
-                                      "2) Manual mode: {\"enabled\": true, \"mode\": \"manual\", \"count\": 50} "
-                                      "3) Custom solvent: {\"enabled\": true, \"mode\": \"auto\", \"solvent\": \"ethanol\"}",
+                                      "2) Manual mode: {\"enabled\": true, \"mode\": \"manual\", \"count\": 50}",
                         "properties": {
-                            "enabled": {"type": "boolean", "description": "Enable solvation"},
+                            "enabled": {"type": "boolean", "description": "Enable explicit solvation (NOT RECOMMENDED)"},
                             "mode": {"type": "string", "enum": ["auto", "manual"], "description": "auto: calculate count from cluster size; manual: specify count"},
                             "solvent": {"type": "string", "description": "Solvent molecule name (default: water)"},
                             "count": {"type": "integer", "description": "Number of solvent molecules (manual mode)"},
@@ -929,9 +951,11 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
         if "fix_substrate_layers" in args:
             config["fix_substrate_layers"] = args["fix_substrate_layers"]
 
-        # Solvation parameters
-        if "solvation" in args:
-            config["solvation"] = args["solvation"]
+        # Explicit solvation parameters (support both old and new parameter names)
+        if "explicit_solvation" in args:
+            config["solvation"] = args["explicit_solvation"]  # Map to internal 'solvation' key
+        elif "solvation" in args:
+            config["solvation"] = args["solvation"]  # Backward compatibility
 
         # Save config to temp file in workspace
         config_path = simulations_dir / f"{args['run_name']}_config.json"
@@ -964,8 +988,11 @@ async def handle_build_simulation(args: dict) -> list[TextContent]:
         if "target" in args and args["target"]:
             result += f"  Target: {args['target']}\n"
         result += f"  Substrate: {config['substrate']}\n"
-        if "solvation" in args and args["solvation"].get("enabled"):
-            result += f"  Solvation: enabled ({args['solvation'].get('mode', 'auto')} mode)\n"
+        # Check for explicit solvation (either parameter name)
+        solvation_args = args.get("explicit_solvation") or args.get("solvation")
+        if solvation_args and solvation_args.get("enabled"):
+            result += f"  ⚠️ Explicit solvation: enabled ({solvation_args.get('mode', 'auto')} mode)\n"
+            result += f"     Note: This adds real water molecules. For most tasks, xTB implicit solvation is sufficient.\n"
 
         result += "\nGenerated structures:\n"
         for name, atoms in structures.items():
