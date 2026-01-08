@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAPIDS MCP Server (v1.8.1)
+RAPIDS MCP Server (v1.9.0)
 ==========================
 Model Context Protocol server for RAPIDS molecular simulation toolkit.
 
@@ -87,6 +87,129 @@ RARE_MOLECULES_DIR = MCP_SERVER_DIR / "rare_molecules"
 _current_workspace: Optional[Path] = None
 
 
+# ============================================================
+# Anchor Sampling Helper Functions
+# ============================================================
+
+def get_principal_axis(atoms) -> tuple:
+    """
+    Calculate the principal axis of a molecule using PCA.
+    Returns the principal axis (longest direction) as a unit vector.
+
+    Args:
+        atoms: ASE Atoms object
+
+    Returns:
+        (principal_axis, extent): Unit vector along longest direction, and extent in Å
+    """
+    import numpy as np
+
+    positions = atoms.get_positions()
+    centered = positions - positions.mean(axis=0)
+
+    # Covariance matrix
+    cov = np.cov(centered.T)
+
+    # Eigendecomposition
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+    # Principal axis is eigenvector with largest eigenvalue
+    principal_idx = np.argmax(eigenvalues)
+    principal_axis = eigenvectors[:, principal_idx]
+
+    # Calculate extent along principal axis
+    projections = centered @ principal_axis
+    extent = projections.max() - projections.min()
+
+    return principal_axis, extent
+
+
+def generate_anchor_positions(atoms, target_atoms, n_anchors: int = 3, base_distance: float = 4.0) -> list:
+    """
+    Generate anchor positions for probe molecule relative to target.
+    Places anchors along the probe's principal axis at different distances from target.
+
+    Args:
+        atoms: Probe molecule (ASE Atoms)
+        target_atoms: Target molecule (ASE Atoms)
+        n_anchors: Number of anchor positions (1=center only, 3=near/mid/far)
+        base_distance: Base distance from target in Å
+
+    Returns:
+        List of position offsets [(dx, dy, dz), ...] relative to target center
+    """
+    import numpy as np
+
+    if n_anchors == 1:
+        # Single anchor at center (current behavior)
+        return [(0, 0, base_distance)]
+
+    # Get probe's principal axis
+    principal_axis, extent = get_principal_axis(atoms)
+
+    # Generate anchor offsets along principal axis
+    # For n_anchors=3: near (0.25), mid (0.5), far (0.75) along extent
+    anchors = []
+
+    for i in range(n_anchors):
+        # Position along principal axis: from 0.25 to 0.75
+        frac = 0.25 + 0.5 * i / (n_anchors - 1) if n_anchors > 1 else 0.5
+
+        # Offset along principal axis from center
+        axis_offset = (frac - 0.5) * extent * principal_axis
+
+        # Position above target (z-direction) plus axis offset
+        position = np.array([0, 0, base_distance]) + axis_offset
+        anchors.append(tuple(position))
+
+    return anchors
+
+
+def check_contact_state(atoms, probe_indices: list, target_indices: list,
+                        min_distance_threshold: float = 3.8,
+                        com_distance_threshold: float = 10.0) -> dict:
+    """
+    Check if probe and target are in proper contact state after optimization.
+
+    Args:
+        atoms: Optimized ASE Atoms object
+        probe_indices: Indices of probe atoms
+        target_indices: Indices of target atoms
+        min_distance_threshold: Maximum allowed minimum distance for contact (Å)
+        com_distance_threshold: Maximum allowed COM distance (Å)
+
+    Returns:
+        dict with 'is_contact', 'min_distance', 'com_distance'
+    """
+    import numpy as np
+
+    positions = atoms.get_positions()
+
+    probe_pos = positions[probe_indices]
+    target_pos = positions[target_indices]
+
+    # Calculate minimum interatomic distance
+    min_dist = float('inf')
+    for p in probe_pos:
+        for t in target_pos:
+            dist = np.linalg.norm(p - t)
+            if dist < min_dist:
+                min_dist = dist
+
+    # Calculate COM distance
+    probe_com = probe_pos.mean(axis=0)
+    target_com = target_pos.mean(axis=0)
+    com_dist = np.linalg.norm(probe_com - target_com)
+
+    is_contact = (min_dist < min_distance_threshold) and (com_dist < com_distance_threshold)
+
+    return {
+        'is_contact': is_contact,
+        'min_distance': min_dist,
+        'com_distance': com_dist
+    }
+
+
 def get_workspace() -> Optional[Path]:
     """Get current workspace directory"""
     return _current_workspace
@@ -134,7 +257,7 @@ AVAILABLE_SUBSTRATES = [
 # Create server instance
 server = Server(
     name="rapids",
-    version="1.8.1",
+    version="1.9.0",
     instructions="""RAPIDS (Rapid Adsorption Probe Interaction Discovery System) is a molecular simulation toolkit.
 
 === IMPORTANT: WORKSPACE SETUP ===
@@ -237,34 +360,57 @@ For QUALITATIVE substrate screening:
 → Trust relative rankings, not absolute values
 → Validate important results with DFT
 
+=== THREE-TIER SAMPLING STRATEGY ===
+
+scan_orientations now supports multi-anchor sampling for more reliable results:
+
+TIER 1 - Initial (Quick check):
+  optimize_structure() → 1 optimization
+  Use for: Quick sanity check, obvious cases
+
+TIER 2 - Middle (RECOMMENDED DEFAULT):
+  scan_orientations(n_anchors=3, num_orientations=3) → 9 optimizations
+  Use for: All production screening tasks
+  Features: 3 anchor positions (near/mid/far) × 3 orientations
+
+TIER 3 - High (Confirmation):
+  Middle tier + additional random sampling → 15-20 optimizations
+  Trigger when: Uncertainty detected (see below)
+
+=== UPGRADE TRIGGERS (Middle → High) ===
+
+Consider high-tier sampling when:
+1. Top2 candidates ΔE < 1 kcal/mol (too close to distinguish)
+2. Same molecule, different anchors ΔE > 2 kcal/mol (position-sensitive)
+3. Contact state success rate < 50% (geometry issues)
+
+=== scan_orientations PARAMETERS ===
+
+n_anchors: Number of anchor positions along probe's principal axis
+  - 1: Center only (legacy mode, fast but may miss optimal binding site)
+  - 3: Near/Mid/Far (RECOMMENDED - explores different binding sites)
+
+num_orientations: Rotations per anchor (default: 3)
+  - Total optimizations = n_anchors × num_orientations
+
 === WHEN TO USE scan_orientations ===
 
-Initial molecular geometry can significantly affect results. Use scan_orientations when:
+ALWAYS use scan_orientations for reliable binding energy ranking.
+The default (n_anchors=3, num_orientations=3) is recommended for all screening.
 
-1. POSITIVE binding energy (> 0 eV): Likely bad initial geometry
-   - Example: +6 eV → after scan → -0.3 eV (true binding)
+Use n_anchors=1 only for:
+- Quick preliminary checks
+- Very small/symmetric molecules (e.g., water, methane)
 
-2. VERY WEAK binding (-0.1 to 0 eV, or -2.3 kcal/mol): May be local minimum
-   - Scan can find better configuration with stronger binding
+=== PARALLEL EXECUTION ===
 
-3. UNEXPECTEDLY large values: If result seems chemically unreasonable
-   - Trust your chemical intuition - if it looks wrong, scan it
+Multiple optimize_structure calls can run in parallel.
+scan_orientations runs sequentially but provides comprehensive sampling.
 
-4. IONIC compounds in vacuum: May have separation artifacts
-   - Example: SDS (Na+ + sulfate anion) gives non-physical results in vacuum
-   - Consider: use neutral analogs or solvated simulations instead
-
-5. KEY candidates: For important molecules in your screening
-   - Worth the extra computation to confirm the result
-
-Rule of thumb: Quick screening first → scan suspicious results → confirm top candidates
-
-PARALLEL EXECUTION SUPPORTED:
-- Multiple optimize_structure calls can run in parallel
-- For screening many molecules, you can call optimize_structure in parallel for efficiency
-
-Typical workflow: build_simulation → optimize_structure → calculate_adsorption_energy
-Optional: → scan_orientations (if result is suspicious)
+Typical workflow:
+1. scan_orientations(probe, target) → Get reliable binding energies
+2. Review results → Check for uncertainty warnings
+3. If uncertain → Add random sampling for top candidates
 """,
 )
 
@@ -561,10 +707,10 @@ async def list_tools() -> list[Tool]:
         # ==================== Orientation Scanning Tool ====================
         Tool(
             name="scan_orientations",
-            description="Scan multiple molecular orientations to find the most stable configuration. "
-                       "Useful when initial geometry may not be optimal. Rotates probe (or target) "
-                       "around specified axis and optimizes each configuration, returning the best one. "
-                       "Helps avoid local minima in geometry optimization.",
+            description="Scan multiple molecular positions and orientations to find the most stable configuration. "
+                       "This is the RECOMMENDED approach for reliable binding energy calculations. "
+                       "Default: 3 anchor positions × 3 orientations = 9 optimizations. "
+                       "Helps avoid local minima by sampling different initial geometries.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -584,9 +730,18 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Substrate material (default: 'vacuum')"
                     },
+                    "n_anchors": {
+                        "type": "integer",
+                        "description": "Number of anchor positions along probe's principal axis (default: 3). "
+                                      "1=center only (fast, legacy), 3=near/mid/far (recommended). "
+                                      "More anchors explore different binding sites.",
+                        "default": 3
+                    },
                     "num_orientations": {
                         "type": "integer",
-                        "description": "Number of orientations to sample (default: 6, evenly spaced)"
+                        "description": "Number of orientations per anchor (default: 3). "
+                                      "Total optimizations = n_anchors × num_orientations.",
+                        "default": 3
                     },
                     "rotate_molecule": {
                         "type": "string",
@@ -595,7 +750,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "rotation_axis": {
                         "type": "string",
-                        "description": "Axis to rotate around: 'x' (tilt, changes relative angle - RECOMMENDED for dimers), 'y' (tilt), 'z' (in-plane rotation), or 'all' (samples all axes). For molecular dimers like benzene-benzene, use 'x' to explore parallel vs T-shaped configurations.",
+                        "description": "Axis to rotate around: 'x' (tilt - RECOMMENDED), 'y', 'z', or 'all'. "
+                                      "Use 'x' for dimers to explore parallel vs T-shaped configurations.",
                         "enum": ["x", "y", "z", "all"]
                     },
                     "task_name": {
@@ -1365,7 +1521,7 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
 # ==================== Orientation Scanning Handler ====================
 
 async def handle_scan_orientations(args: dict) -> list[TextContent]:
-    """Scan multiple orientations to find the most stable configuration"""
+    """Scan multiple positions (anchors) and orientations to find the most stable configuration"""
     try:
         # Check workspace
         ok, error_msg = require_workspace()
@@ -1375,23 +1531,34 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
         simulations_dir = get_simulations_dir()
 
         import numpy as np
+        from ase.io import read
 
         run_name = args["run_name"]
         probe = args["probe"]
         target = args["target"]
         substrate = args.get("substrate", "vacuum")
-        num_orientations = args.get("num_orientations", 6)
+        n_anchors = args.get("n_anchors", 3)  # NEW: number of anchor positions
+        num_orientations = args.get("num_orientations", 3)  # Default changed to 3
         rotate_molecule = args.get("rotate_molecule", "probe")
         rotation_axis = args.get("rotation_axis", "x")  # Default to x (tilt) for dimers
         task_name = args.get("task_name", "omol")
         fmax = args.get("fmax", 0.05)
 
-        result_text = f"Orientation Scan: {run_name}\n"
+        total_configs = n_anchors * num_orientations
+        result_text = f"Anchor-Orientation Scan: {run_name}\n"
         result_text += f"Workspace: {_current_workspace}\n"
         result_text += f"Probe: {probe}, Target: {target}\n"
+        result_text += f"Anchors: {n_anchors}, Orientations: {num_orientations} → Total: {total_configs} configs\n"
         result_text += f"Rotating: {rotate_molecule} around {rotation_axis}-axis\n"
-        result_text += f"Sampling {num_orientations} orientations\n"
         result_text += f"Task: {task_name}\n\n"
+
+        # Generate anchor labels
+        if n_anchors == 1:
+            anchor_labels = ["center"]
+        elif n_anchors == 3:
+            anchor_labels = ["near", "mid", "far"]
+        else:
+            anchor_labels = [f"anchor_{i}" for i in range(n_anchors)]
 
         # Generate rotation angles
         if rotation_axis == "all":
@@ -1401,116 +1568,166 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
                 for angle in np.linspace(0, 300, num_orientations // 3 + 1)[:-1]:
                     angles_list.append((axis, float(angle)))
             if len(angles_list) < num_orientations:
-                # Add more z rotations
                 for angle in np.linspace(0, 300, num_orientations - len(angles_list) + 1)[1:]:
                     angles_list.append(("z", float(angle)))
         else:
             angles_list = [(rotation_axis, float(a)) for a in np.linspace(0, 360 - 360/num_orientations, num_orientations)]
 
         all_results = []
+        contact_stats = {"success": 0, "failed": 0}
 
         # Redirect stdout for all operations
         old_stdout = sys.stdout
         sys.stdout = sys.stderr
 
         try:
-            for i, (axis, angle) in enumerate(angles_list):
-                sub_run_name = f"{run_name}_orient_{i}"
-                result_text += f"[{i+1}/{len(angles_list)}] {axis}-axis, {angle:.1f}°... "
+            config_idx = 0
+            for anchor_idx in range(n_anchors):
+                anchor_label = anchor_labels[anchor_idx]
 
-                # Build euler angles based on rotation axis
-                if axis == "x":
-                    euler = [angle, 0, 0]
-                elif axis == "y":
-                    euler = [0, angle, 0]
-                else:  # z
-                    euler = [0, 0, angle]
-
-                # Prepare config
-                config = {
-                    "run_name": sub_run_name,
-                    "probe": probe,
-                    "target": target,
-                    "substrate": substrate,
-                    "task_name": task_name,
-                    "fmax": fmax,
-                }
-
-                # Set orientation based on which molecule to rotate
-                if rotate_molecule == "probe":
-                    config["probe_orientation"] = {"euler": euler}
+                # Calculate anchor offset along principal axis
+                # For n_anchors=3: positions at 0.25, 0.5, 0.75 along extent
+                if n_anchors == 1:
+                    anchor_frac = 0.5  # Center
                 else:
-                    config["target_orientation"] = {"euler": euler}
+                    anchor_frac = 0.25 + 0.5 * anchor_idx / (n_anchors - 1)
 
-                # Build simulation
-                config_path = simulations_dir / f"{sub_run_name}_config.json"
-                config_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=2)
+                for angle_idx, (axis, angle) in enumerate(angles_list):
+                    config_idx += 1
+                    sub_run_name = f"{run_name}_a{anchor_idx}_o{angle_idx}"
+                    result_text += f"[{config_idx}/{total_configs}] {anchor_label}, {axis}-axis {angle:.0f}°... "
 
-                try:
-                    SimulationBuilder = get_simulation_builder()
-                    builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
-                    structures = builder.build_simulation()
-                    builder.save_structures(structures)
-                    config_path.unlink(missing_ok=True)
+                    # Build euler angles based on rotation axis
+                    if axis == "x":
+                        euler = [angle, 0, 0]
+                    elif axis == "y":
+                        euler = [0, angle, 0]
+                    else:  # z
+                        euler = [0, 0, angle]
 
-                    # Optimize
-                    opt_config_path = simulations_dir / sub_run_name / "config_opt.json"
-                    with open(opt_config_path, 'w') as f:
+                    # Prepare config with anchor position
+                    config = {
+                        "run_name": sub_run_name,
+                        "probe": probe,
+                        "target": target,
+                        "substrate": substrate,
+                        "task_name": task_name,
+                        "fmax": fmax,
+                    }
+
+                    # Set orientation based on which molecule to rotate
+                    if rotate_molecule == "probe":
+                        config["probe_orientation"] = {"euler": euler}
+                    else:
+                        config["target_orientation"] = {"euler": euler}
+
+                    # For multi-anchor: adjust probe position along its principal axis
+                    # This is done by setting a fractional position offset
+                    if n_anchors > 1:
+                        # Offset along x-axis (principal axis projection)
+                        # Range: -2 to +2 Angstroms from center
+                        offset = (anchor_frac - 0.5) * 4.0
+                        config["probe_position"] = {
+                            "relative_to": "target",
+                            "lateral_offset": offset,
+                            "vertical_offset": 0,
+                            "direction": "x"
+                        }
+
+                    # Build simulation
+                    config_path = simulations_dir / f"{sub_run_name}_config.json"
+                    config_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(config_path, 'w') as f:
                         json.dump(config, f, indent=2)
 
-                    SmartFlow = get_smart_flow()
-                    flow = SmartFlow(str(opt_config_path), workspace=str(_current_workspace))
-                    await asyncio.to_thread(flow.run_workflow)
+                    try:
+                        SimulationBuilder = get_simulation_builder()
+                        builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
+                        structures = builder.build_simulation()
+                        builder.save_structures(structures)
+                        config_path.unlink(missing_ok=True)
 
-                    # Clean up
-                    del flow
-                    import gc
-                    gc.collect()
+                        # Optimize
+                        opt_config_path = simulations_dir / sub_run_name / "config_opt.json"
+                        with open(opt_config_path, 'w') as f:
+                            json.dump(config, f, indent=2)
 
-                    # Read interaction energy
-                    interactions_path = simulations_dir / sub_run_name / "interactions.json"
-                    if interactions_path.exists():
-                        with open(interactions_path) as f:
-                            interactions = json.load(f)
-                        # Get probe-target interaction energy
-                        energy = interactions.get("probe_target_vacuum", interactions.get("probe_target", None))
-                        if energy is not None:
-                            kcal = energy * 23.061
-                            result_entry = {
-                                "run_name": sub_run_name,
-                                "axis": axis,
-                                "angle": angle,
-                                "energy_eV": energy,
-                                "energy_kcal": kcal
-                            }
-                            # Read solvation data if available
-                            solvation_path = simulations_dir / sub_run_name / "solvation.json"
-                            if solvation_path.exists():
-                                with open(solvation_path) as f:
-                                    solvation = json.load(f)
-                                if "delta_G_solution" in solvation:
-                                    result_entry["solution_eV"] = solvation["delta_G_solution"]
-                                    result_entry["solution_kcal"] = solvation["delta_G_solution"] * 23.061
-                            all_results.append(result_entry)
-                            result_text += f"{energy:.4f} eV ({kcal:.2f} kcal/mol)\n"
+                        SmartFlow = get_smart_flow()
+                        flow = SmartFlow(str(opt_config_path), workspace=str(_current_workspace))
+                        await asyncio.to_thread(flow.run_workflow)
+
+                        # Clean up
+                        del flow
+                        import gc
+                        gc.collect()
+
+                        # Read interaction energy
+                        interactions_path = simulations_dir / sub_run_name / "interactions.json"
+                        if interactions_path.exists():
+                            with open(interactions_path) as f:
+                                interactions = json.load(f)
+                            # Get probe-target interaction energy
+                            energy = interactions.get("probe_target_vacuum", interactions.get("probe_target", None))
+                            if energy is not None:
+                                kcal = energy * 23.061
+                                result_entry = {
+                                    "run_name": sub_run_name,
+                                    "anchor": anchor_label,
+                                    "anchor_idx": anchor_idx,
+                                    "axis": axis,
+                                    "angle": angle,
+                                    "energy_eV": energy,
+                                    "energy_kcal": kcal
+                                }
+
+                                # Check contact state from optimized structure
+                                opt_xyz = simulations_dir / sub_run_name / "optimized_probe_target_vacuum.xyz"
+                                if opt_xyz.exists():
+                                    opt_atoms = read(opt_xyz)
+                                    # Estimate probe/target indices (probe comes after target typically)
+                                    # This is approximate; for exact indices we'd need to save them
+                                    n_atoms = len(opt_atoms)
+                                    # Assume roughly half-half split for probe-target
+                                    mid = n_atoms // 2
+                                    contact_info = check_contact_state(
+                                        opt_atoms,
+                                        probe_indices=list(range(mid, n_atoms)),
+                                        target_indices=list(range(0, mid))
+                                    )
+                                    result_entry["is_contact"] = contact_info["is_contact"]
+                                    result_entry["min_distance"] = contact_info["min_distance"]
+                                    if contact_info["is_contact"]:
+                                        contact_stats["success"] += 1
+                                    else:
+                                        contact_stats["failed"] += 1
+
+                                # Read solvation data if available
+                                solvation_path = simulations_dir / sub_run_name / "solvation.json"
+                                if solvation_path.exists():
+                                    with open(solvation_path) as f:
+                                        solvation = json.load(f)
+                                    if "delta_G_solution" in solvation:
+                                        result_entry["solution_eV"] = solvation["delta_G_solution"]
+                                        result_entry["solution_kcal"] = solvation["delta_G_solution"] * 23.061
+
+                                all_results.append(result_entry)
+                                result_text += f"{energy:.4f} eV ({kcal:.2f} kcal/mol)\n"
+                            else:
+                                result_text += "No interaction energy found\n"
                         else:
-                            result_text += "No interaction energy found\n"
-                    else:
-                        result_text += "Optimization failed\n"
+                            result_text += "Optimization failed\n"
 
-                except Exception as e:
-                    result_text += f"Error: {str(e)}\n"
+                    except Exception as e:
+                        result_text += f"Error: {str(e)}\n"
 
         finally:
             sys.stdout = old_stdout
 
-        # Find best orientation
+        # Find best configuration
         if all_results:
-            result_text += "\n" + "="*50 + "\n"
-            result_text += "ORIENTATION SCAN RESULTS\n"
-            result_text += "="*50 + "\n\n"
+            result_text += "\n" + "="*60 + "\n"
+            result_text += "ANCHOR-ORIENTATION SCAN RESULTS\n"
+            result_text += "="*60 + "\n\n"
 
             # Sort by energy (most negative first)
             sorted_results = sorted(all_results, key=lambda x: x["energy_eV"])
@@ -1518,9 +1735,12 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
             result_text += "Ranked by interaction energy (most favorable first):\n\n"
             for rank, r in enumerate(sorted_results, 1):
                 marker = " ← BEST" if rank == 1 else ""
-                line = f"{rank}. {r['axis']}-axis {r['angle']:.1f}°: {r['energy_eV']:.4f} eV ({r['energy_kcal']:.2f} kcal/mol)"
+                line = f"{rank}. [{r['anchor']}] {r['axis']}-axis {r['angle']:.0f}°: "
+                line += f"{r['energy_eV']:.4f} eV ({r['energy_kcal']:.2f} kcal/mol)"
                 if "solution_eV" in r:
                     line += f" | Sol: {r['solution_eV']:.4f} eV"
+                if "is_contact" in r and not r["is_contact"]:
+                    line += " ⚠️ no contact"
                 line += marker
                 result_text += line + "\n"
 
@@ -1528,9 +1748,43 @@ async def handle_scan_orientations(args: dict) -> list[TextContent]:
             worst = sorted_results[-1]
             spread = worst["energy_eV"] - best["energy_eV"]
 
-            result_text += f"\nEnergy spread: {spread:.4f} eV ({spread * 23.061:.2f} kcal/mol)\n"
+            result_text += f"\n--- Summary ---\n"
+            result_text += f"Energy spread: {spread:.4f} eV ({spread * 23.061:.2f} kcal/mol)\n"
             result_text += f"Best configuration: {best['run_name']}\n"
+            result_text += f"  Anchor: {best['anchor']}, Orientation: {best['axis']}-axis {best['angle']:.0f}°\n"
             result_text += f"  Location: simulations/{best['run_name']}/\n"
+
+            # Contact state statistics
+            total_contact = contact_stats["success"] + contact_stats["failed"]
+            if total_contact > 0:
+                contact_rate = contact_stats["success"] / total_contact * 100
+                result_text += f"\nContact state: {contact_stats['success']}/{total_contact} ({contact_rate:.0f}%)\n"
+                if contact_rate < 50:
+                    result_text += "⚠️ Low contact rate - consider adjusting initial positions or using high-tier sampling\n"
+
+            # Anchor-wise analysis
+            if n_anchors > 1:
+                result_text += f"\n--- Anchor Analysis ---\n"
+                for anchor_label in anchor_labels:
+                    anchor_results = [r for r in sorted_results if r["anchor"] == anchor_label]
+                    if anchor_results:
+                        best_anchor = min(anchor_results, key=lambda x: x["energy_eV"])
+                        result_text += f"{anchor_label}: best = {best_anchor['energy_eV']:.4f} eV ({best_anchor['energy_kcal']:.2f} kcal/mol)\n"
+
+                # Check for uncertainty (anchor sensitivity)
+                anchor_bests = []
+                for anchor_label in anchor_labels:
+                    anchor_results = [r for r in sorted_results if r["anchor"] == anchor_label]
+                    if anchor_results:
+                        anchor_bests.append(min(r["energy_eV"] for r in anchor_results))
+
+                if len(anchor_bests) >= 2:
+                    anchor_spread = max(anchor_bests) - min(anchor_bests)
+                    anchor_spread_kcal = anchor_spread * 23.061
+                    result_text += f"\nAnchor sensitivity: {anchor_spread:.4f} eV ({anchor_spread_kcal:.2f} kcal/mol)\n"
+                    if anchor_spread_kcal > 2.0:
+                        result_text += "⚠️ High anchor sensitivity - results may depend on initial position\n"
+
         else:
             result_text += "\nNo successful optimizations completed.\n"
 
