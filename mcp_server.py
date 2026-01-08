@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAPIDS MCP Server (v1.9.0)
+RAPIDS MCP Server (v1.9.1)
 ==========================
 Model Context Protocol server for RAPIDS molecular simulation toolkit.
 
@@ -257,7 +257,7 @@ AVAILABLE_SUBSTRATES = [
 # Create server instance
 server = Server(
     name="rapids",
-    version="1.9.0",
+    version="1.9.1",
     instructions="""RAPIDS (Rapid Adsorption Probe Interaction Discovery System) is a molecular simulation toolkit.
 
 === IMPORTANT: WORKSPACE SETUP ===
@@ -664,8 +664,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="batch_screening",
             description="Screen multiple probe molecules against a target and/or substrate. "
-                       "Useful for high-throughput virtual screening of molecular interactions. "
-                       "Returns comparative adsorption energies for all probes.",
+                       "By default uses multi-anchor scanning (9 optimizations per probe) for reliable results. "
+                       "Set use_scan=false for faster but less reliable single-point screening.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -680,15 +680,27 @@ async def list_tools() -> list[Tool]:
                     },
                     "target": {
                         "type": "string",
-                        "description": "Optional target molecule for probe-target interaction screening"
+                        "description": "Target molecule for probe-target interaction screening (required for use_scan=true)"
                     },
                     "substrate": {
                         "type": "string",
                         "description": "Substrate material (default: 'vacuum')"
                     },
-                    "optimize": {
+                    "use_scan": {
                         "type": "boolean",
-                        "description": "Whether to run geometry optimization (default: true). Set to false for quick energy comparison."
+                        "description": "Use multi-anchor scan (default: true, 9 optimizations per probe). "
+                                      "Set to false for fast single-optimization mode (less reliable).",
+                        "default": True
+                    },
+                    "n_anchors": {
+                        "type": "integer",
+                        "description": "Number of anchor positions when use_scan=true (default: 3)",
+                        "default": 3
+                    },
+                    "num_orientations": {
+                        "type": "integer",
+                        "description": "Number of orientations per anchor when use_scan=true (default: 3)",
+                        "default": 3
                     },
                     "fmax": {
                         "type": "number",
@@ -1381,7 +1393,7 @@ async def handle_calculate_adsorption_energy(args: dict) -> list[TextContent]:
 # ==================== Batch Screening Handler ====================
 
 async def handle_batch_screening(args: dict) -> list[TextContent]:
-    """Run batch screening of multiple probes"""
+    """Run batch screening of multiple probes with optional multi-anchor scanning"""
     try:
         # Check workspace
         ok, error_msg = require_workspace()
@@ -1394,10 +1406,17 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
         probes = args["probes"]
         target = args.get("target")
         substrate = args.get("substrate", "vacuum")
-        optimize = args.get("optimize", True)
+        use_scan = args.get("use_scan", True)  # NEW: default to scan mode
+        n_anchors = args.get("n_anchors", 3)
+        num_orientations = args.get("num_orientations", 3)
         fmax = args.get("fmax", 0.05)
         task_name = args.get("task_name", "omol")
 
+        # Validate: scan mode requires target
+        if use_scan and not target:
+            return [TextContent(type="text", text="Error: use_scan=true requires a target molecule. Either provide target or set use_scan=false.")]
+
+        total_opts = n_anchors * num_orientations if use_scan else 1
         result_text = f"Batch Screening: {run_name}\n"
         result_text += f"Workspace: {_current_workspace}\n"
         result_text += f"Probes: {', '.join(probes)}\n"
@@ -1405,83 +1424,130 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
             result_text += f"Target: {target}\n"
         result_text += f"Substrate: {substrate}\n"
         result_text += f"Task: {task_name}\n"
-        result_text += f"Optimize: {optimize}\n\n"
+        result_text += f"Mode: {'Multi-anchor scan (' + str(n_anchors) + '×' + str(num_orientations) + '=' + str(total_opts) + ' opts/probe)' if use_scan else 'Single optimization (fast mode)'}\n\n"
 
         all_results = {}
 
         for i, probe in enumerate(probes):
-            result_text += f"[{i+1}/{len(probes)}] Processing {probe}...\n"
+            result_text += f"\n[{i+1}/{len(probes)}] Processing {probe}...\n"
 
-            sub_run_name = f"{run_name}_{probe}"
-            config = {
-                "run_name": sub_run_name,
-                "probe": probe,
-                "substrate": substrate,
-                "task_name": task_name,
-                "fmax": fmax,
-            }
-            if target:
-                config["target"] = target
+            if use_scan:
+                # Use scan_orientations for reliable results
+                sub_run_name = f"{run_name}_{probe}"
+                scan_args = {
+                    "run_name": sub_run_name,
+                    "probe": probe,
+                    "target": target,
+                    "substrate": substrate,
+                    "n_anchors": n_anchors,
+                    "num_orientations": num_orientations,
+                    "task_name": task_name,
+                    "fmax": fmax,
+                }
 
-            # Build
-            config_path = simulations_dir / f"{sub_run_name}_config.json"
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+                # Call scan_orientations handler directly
+                scan_result = await handle_scan_orientations(scan_args)
+                scan_text = scan_result[0].text
 
-            # Redirect stdout for entire build+optimize to avoid MCP pollution
-            old_stdout = sys.stdout
-            sys.stdout = sys.stderr
-            try:
-                SimulationBuilder = get_simulation_builder()
-                builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
-                structures = builder.build_simulation()
-                builder.save_structures(structures)
-                config_path.unlink(missing_ok=True)
+                # Parse best result from scan output
+                # Look for the best energy line
+                best_energy = None
+                best_solution = None
+                for line in scan_text.split('\n'):
+                    if '← BEST' in line:
+                        # Parse energy from line like "1. [near] x-axis 0°: -0.0854 eV (-1.97 kcal/mol) | Sol: -0.1003 eV ← BEST"
+                        try:
+                            parts = line.split(':')[1].split('eV')[0].strip()
+                            best_energy = float(parts)
+                            if '| Sol:' in line:
+                                sol_part = line.split('| Sol:')[1].split('eV')[0].strip()
+                                best_solution = float(sol_part)
+                        except:
+                            pass
+                        break
 
-                if optimize:
+                if best_energy is not None:
+                    all_results[probe] = {
+                        "probe_target_vacuum": best_energy,
+                        "scan_mode": True,
+                        "n_configs": total_opts
+                    }
+                    if best_solution is not None:
+                        all_results[probe]["solvation"] = {"delta_G_solution": best_solution}
+                    result_text += f"  Best: {best_energy:.4f} eV"
+                    if best_solution:
+                        result_text += f" | Solution: {best_solution:.4f} eV"
+                    result_text += "\n"
+                else:
+                    all_results[probe] = {"error": "Could not parse scan results"}
+                    result_text += f"  Error parsing results\n"
+
+            else:
+                # Legacy single-optimization mode
+                sub_run_name = f"{run_name}_{probe}"
+                config = {
+                    "run_name": sub_run_name,
+                    "probe": probe,
+                    "substrate": substrate,
+                    "task_name": task_name,
+                    "fmax": fmax,
+                }
+                if target:
+                    config["target"] = target
+
+                # Build
+                config_path = simulations_dir / f"{sub_run_name}_config.json"
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=2)
+
+                # Redirect stdout for entire build+optimize to avoid MCP pollution
+                old_stdout = sys.stdout
+                sys.stdout = sys.stderr
+                try:
+                    SimulationBuilder = get_simulation_builder()
+                    builder = SimulationBuilder(str(config_path), workspace=str(_current_workspace))
+                    structures = builder.build_simulation()
+                    builder.save_structures(structures)
+                    config_path.unlink(missing_ok=True)
+
                     config["fmax"] = fmax
-                    # Save config to temp file (SmartFlow expects file path)
                     opt_config_path = simulations_dir / f"{sub_run_name}" / "config_opt.json"
                     with open(opt_config_path, 'w') as f:
                         json.dump(config, f, indent=2)
                     SmartFlow = get_smart_flow()
                     flow = SmartFlow(str(opt_config_path), workspace=str(_current_workspace))
                     await asyncio.to_thread(flow.run_workflow)
-                    # Clean up
                     del flow
                     import gc
                     gc.collect()
-                    # Read results from saved file
+
                     interactions_path = simulations_dir / sub_run_name / "interactions.json"
                     if interactions_path.exists():
                         with open(interactions_path) as f:
                             all_results[probe] = json.load(f)
                     else:
                         all_results[probe] = {"status": "optimized but no interactions found"}
-                    # Also read solvation data if available
+
                     solvation_path = simulations_dir / sub_run_name / "solvation.json"
                     if solvation_path.exists():
                         with open(solvation_path) as f:
                             all_results[probe]["solvation"] = json.load(f)
-                else:
-                    all_results[probe] = {"status": "built (not optimized)"}
 
-            except Exception as e:
-                all_results[probe] = {"error": str(e)}
-            finally:
-                sys.stdout = old_stdout  # Always restore stdout
+                except Exception as e:
+                    all_results[probe] = {"error": str(e)}
+                finally:
+                    sys.stdout = old_stdout
 
         # Summary
-        result_text += "\n" + "="*50 + "\n"
-        result_text += "SCREENING RESULTS SUMMARY\n"
-        result_text += "="*50 + "\n\n"
+        result_text += "\n" + "="*60 + "\n"
+        result_text += "BATCH SCREENING RESULTS\n"
+        result_text += "="*60 + "\n\n"
 
         # Sort by adsorption energy if available
         sorted_probes = []
         for probe, data in all_results.items():
             if isinstance(data, dict) and "error" not in data:
-                # Get the most relevant adsorption energy
                 if "probe_target" in data:
                     sorted_probes.append((probe, data["probe_target"], "probe_target"))
                 elif "probe_substrate" in data:
@@ -1495,7 +1561,7 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
 
         sorted_probes.sort(key=lambda x: x[1])
 
-        result_text += "Ranked by adsorption energy (most favorable/negative first):\n\n"
+        result_text += "Ranked by binding energy (most favorable/negative first):\n\n"
         for rank, (probe, energy, energy_type) in enumerate(sorted_probes, 1):
             if energy == float('inf'):
                 result_text += f"{rank}. {probe}: ERROR - {all_results[probe].get('error', 'unknown')}\n"
@@ -1504,12 +1570,18 @@ async def handle_batch_screening(args: dict) -> list[TextContent]:
             else:
                 kcal = energy * 23.061
                 line = f"{rank}. {probe}: {energy:.4f} eV ({kcal:.2f} kcal/mol)"
-                # Add solution binding if available
                 if "solvation" in all_results[probe] and "delta_G_solution" in all_results[probe]["solvation"]:
                     sol_energy = all_results[probe]["solvation"]["delta_G_solution"]
                     sol_kcal = sol_energy * 23.061
                     line += f" | Solution: {sol_energy:.4f} eV ({sol_kcal:.2f} kcal/mol)"
+                if all_results[probe].get("scan_mode"):
+                    line += f" [scanned {all_results[probe].get('n_configs', '?')} configs]"
                 result_text += line + "\n"
+
+        if use_scan:
+            result_text += f"\nNote: Each probe was screened with {total_opts} configurations (multi-anchor scan).\n"
+        else:
+            result_text += f"\nNote: Fast mode (single optimization). For more reliable results, use use_scan=true.\n"
 
         return [TextContent(type="text", text=result_text)]
 
