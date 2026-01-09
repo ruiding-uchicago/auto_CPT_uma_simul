@@ -1290,7 +1290,12 @@ async def handle_calculate_energy(args: dict) -> list[TextContent]:
         structure_path = args["structure_path"]
 
         if not os.path.isabs(structure_path):
-            structure_path = Path(__file__).parent / structure_path
+            # Use workspace if set, otherwise fall back to MCP server directory
+            workspace = get_workspace()
+            if workspace:
+                structure_path = workspace / structure_path
+            else:
+                structure_path = Path(__file__).parent / structure_path
 
         if not Path(structure_path).exists():
             return [TextContent(type="text", text=f"Structure file not found: {structure_path}")]
@@ -2073,7 +2078,12 @@ async def handle_analyze_structure(args: dict) -> list[TextContent]:
         structure_path = args["structure_path"]
 
         if not os.path.isabs(structure_path):
-            structure_path = Path(__file__).parent / structure_path
+            # Use workspace if set, otherwise fall back to MCP server directory
+            workspace = get_workspace()
+            if workspace:
+                structure_path = workspace / structure_path
+            else:
+                structure_path = Path(__file__).parent / structure_path
 
         if not Path(structure_path).exists():
             return [TextContent(type="text", text=f"Structure file not found: {structure_path}")]
