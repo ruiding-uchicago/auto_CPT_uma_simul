@@ -959,45 +959,41 @@ async def handle_list_local_molecules() -> list[TextContent]:
     """List locally available molecules in current workspace and shared directories"""
     molecules_dir = get_molecules_dir()
 
-    # Collect molecules from all sources
-    workspace_molecules = set()
-    shared_molecules = set()
+    # Collect molecules with full paths
+    molecules = {}  # name -> path
 
     # 1. Workspace molecules
     if molecules_dir and molecules_dir.exists():
         for f in molecules_dir.glob("*.sdf"):
             if f.stem and not f.name.startswith('.'):
-                workspace_molecules.add(f.stem)
+                molecules[f.stem] = str(f)
 
     # 2. Global shared molecules (MCP_SERVER_DIR/molecules)
     global_molecules_dir = MCP_SERVER_DIR / "molecules"
     if global_molecules_dir.exists():
         for f in global_molecules_dir.glob("*.sdf"):
             if f.stem and not f.name.startswith('.'):
-                shared_molecules.add(f.stem)
+                if f.stem not in molecules:  # workspace takes priority
+                    molecules[f.stem] = str(f)
 
     # 3. Rare molecules (MCP_SERVER_DIR/rare_molecules)
     if RARE_MOLECULES_DIR.exists():
         for f in RARE_MOLECULES_DIR.glob("*.sdf"):
             if f.stem and not f.name.startswith('.'):
-                shared_molecules.add(f.stem)
-
-    # Combine and sort
-    all_molecules = sorted(workspace_molecules | shared_molecules)
+                if f.stem not in molecules:
+                    molecules[f.stem] = str(f)
 
     result = f"Workspace: {_current_workspace or '(not set)'}\n\n"
-    result += f"Local Molecules ({len(all_molecules)} available):\n"
-    if all_molecules:
-        result += ", ".join(all_molecules)
+    result += f"Local Molecules ({len(molecules)} available):\n\n"
+
+    if molecules:
+        for name in sorted(molecules.keys()):
+            result += f"  {name}: {molecules[name]}\n"
     else:
-        result += "(none yet - molecules will be downloaded when you run simulations)"
+        result += "(none yet - molecules will be downloaded when you run simulations)\n"
 
-    # Show breakdown if both sources have molecules
-    if workspace_molecules and shared_molecules:
-        result += f"\n\n  Workspace: {len(workspace_molecules)} | Shared: {len(shared_molecules)}"
-
-    result += "\n\nNote: Any molecule name can be used - if not found locally, it will be auto-downloaded from PubChem."
-    result += "\nExamples of downloadable molecules: ibuprofen, aspirin, caffeine, nicotine, morphine, penicillin, etc."
+    result += "\nNote: Any molecule name can be used - if not found locally, it will be auto-downloaded from PubChem."
+    result += "\nTo view a molecule's 3D structure, use Read tool on the .sdf file path above."
     return [TextContent(type="text", text=result)]
 
 
